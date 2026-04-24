@@ -66,7 +66,10 @@ def _normalise_method(raw: str) -> str:
 # Number helpers
 # --------------------------------------------------------------------------- #
 def _parse_views(raw: str) -> Optional[int]:
-    cleaned = raw.strip().replace(" ", "").replace(",", "").replace("\u202f", "")
+    # Strip all known space/separator variants, then try int
+    cleaned = raw.strip()
+    for ch in ("\u00a0", "\u202f", "\u2009", "\u0020", " ", "\xa0", ",", "."):
+        cleaned = cleaned.replace(ch, "")
     try:
         return int(cleaned)
     except ValueError:
@@ -106,6 +109,7 @@ class VideoRow:
     pay_method:   str
     game:         str
     mode:         str
+    manager:      str = ""
     has_error:    bool = False
     error_fields: list[str] = field(default_factory=list)
 
@@ -192,11 +196,12 @@ def _parse_splite_row(parts: list[str], lang: str) -> VideoRow:
     if platform == err:      error_fields.append("platform")
     if game == err:          error_fields.append("game")
 
+    manager = parts[12].strip() if len(parts) > 12 else ""
     return VideoRow(
         blogger=blogger, platform=platform, link=link,
         date=date, views_raw=views_display, views=views,
         price=price, pay_method=pay_method, game=game,
-        mode="splite", has_error=bool(error_fields),
+        mode="splite", manager=manager, has_error=bool(error_fields),
         error_fields=error_fields,
     )
 
@@ -222,11 +227,12 @@ def _parse_ammm2_row(parts: list[str], lang: str) -> VideoRow:
     if platform == err:      error_fields.append("platform")
     if game == err:          error_fields.append("game")
 
+    manager = parts[14].strip() if len(parts) > 14 else ""
     return VideoRow(
         blogger=blogger, platform=platform, link=link,
         date=date, views_raw=views_display, views=views,
         price=price, pay_method=pay_method, game=game,
-        mode="ammm2", has_error=bool(error_fields),
+        mode="ammm2", manager=manager, has_error=bool(error_fields),
         error_fields=error_fields,
     )
 
@@ -236,6 +242,8 @@ def _parse_ammm2_row(parts: list[str], lang: str) -> VideoRow:
 # --------------------------------------------------------------------------- #
 def parse_rows(text: str, lang: str = "ru") -> ParseResult:
     result = ParseResult()
+    # Strip \r (CRLF from Windows/Google Sheets copy-paste)
+    text = text.replace("\r", "")
     lines = text.strip().splitlines()
     detected_mode: Optional[str] = None
     blogger_map: dict[str, BloggerResult] = {}

@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS users (
     username    TEXT,
     role        TEXT NOT NULL DEFAULT 'manager',
     lang        TEXT NOT NULL DEFAULT 'ru',
+    manager_filter TEXT,
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -37,6 +38,7 @@ CREATE TABLE IF NOT EXISTS payment_methods (
     address     TEXT NOT NULL,
     label       TEXT,
     is_active   INTEGER NOT NULL DEFAULT 1,
+    is_primary  INTEGER NOT NULL DEFAULT 0,
     added_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -69,12 +71,43 @@ async def init_db() -> None:
     os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript(_SCHEMA)
+        # Migrations for existing DBs
+        for col, definition in [
+            ("is_primary", "INTEGER NOT NULL DEFAULT 0"),
+            ("manager_filter", "TEXT"),
+        ]:
+            try:
+                if col == "is_primary":
+                    await db.execute(f"ALTER TABLE payment_methods ADD COLUMN {col} {definition}")
+                else:
+                    await db.execute(f"ALTER TABLE users ADD COLUMN {col} {definition}")
+            except Exception:
+                pass  # Column already exists
         await db.commit()
     log_system("DB_INIT", path=DB_PATH)
 
 
-async def get_db() -> aiosqlite.Connection:
-    conn = await aiosqlite.connect(DB_PATH)
-    conn.row_factory = aiosqlite.Row
-    await conn.execute("PRAGMA foreign_keys=ON")
-    return conn
+class _DBContext:
+    """Async context manager that opens a fresh connection each time."""
+    def __init__(self):
+        self._conn = None
+
+    async def __aenter__(self) -> aiosqlite.Connection:
+        self._conn = await aiosqlite.connect(DB_PATH)
+        self._conn.row_factory = aiosqlite.Row
+        await self._conn.execute("PRAGMA foreign_keys=ON")
+        return self._conn
+
+    async def __aexit__(self, exc_type, exc, tb):
+        if self._conn:
+            await self._conn.close()
+            self._conn = None
+
+
+def get_db() -> _DBContext:
+    """
+    Usage:
+        async with get_db() as db:
+            await db.execute(...)
+    """
+    return _DBContext()
