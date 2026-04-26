@@ -67,7 +67,7 @@ async def add_blogger(name: str, manager_id: int, notes: str | None = None) -> d
         except aiosqlite.IntegrityError:
             return None
         async with db.execute(
-            "SELECT * FROM bloggers WHERE name = ? AND manager_id = ?",
+            "SELECT * FROM bloggers WHERE name = ? AND manager_id = ? AND is_active = 1",
             (name, manager_id),
         ) as cur:
             row = await cur.fetchone()
@@ -77,7 +77,7 @@ async def add_blogger(name: str, manager_id: int, notes: str | None = None) -> d
 async def get_blogger_by_name(name: str, manager_id: int) -> dict | None:
     async with get_db() as db:
         async with db.execute(
-            "SELECT * FROM bloggers WHERE name = ? AND manager_id = ?",
+            "SELECT * FROM bloggers WHERE name = ? AND manager_id = ? AND is_active = 1",
             (name, manager_id),
         ) as cur:
             row = await cur.fetchone()
@@ -106,10 +106,52 @@ async def get_bloggers_without_method(manager_id: int) -> list[dict]:
 async def get_bloggers_for_manager(manager_id: int) -> list[dict]:
     async with get_db() as db:
         async with db.execute(
-            "SELECT * FROM bloggers WHERE manager_id = ? ORDER BY name",
+            "SELECT * FROM bloggers WHERE manager_id = ? AND is_active = 1 ORDER BY name",
             (manager_id,),
         ) as cur:
             return [dict(r) for r in await cur.fetchall()]
+
+
+
+async def deactivate_blogger(blogger_id: int) -> None:
+    """Soft delete: hide blogger from all lists."""
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE bloggers SET is_active = 0 WHERE id = ?", (blogger_id,)
+        )
+        await db.commit()
+
+
+async def search_bloggers_by_prefix(prefix: str, manager_id: int) -> list[dict]:
+    """Find active bloggers whose name starts with prefix (case-insensitive)."""
+    async with get_db() as db:
+        async with db.execute(
+            """
+            SELECT * FROM bloggers
+            WHERE manager_id = ? AND is_active = 1
+            AND lower(name) LIKE lower(?)
+            ORDER BY name
+            """,
+            (manager_id, f"{prefix}%"),
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
+async def update_blogger_notes(blogger_id: int, notes: str) -> None:
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE bloggers SET notes = ? WHERE id = ?", (notes, blogger_id)
+        )
+        await db.commit()
+
+
+async def get_blogger_by_id(blogger_id: int) -> dict | None:
+    async with get_db() as db:
+        async with db.execute(
+            "SELECT * FROM bloggers WHERE id = ?", (blogger_id,)
+        ) as cur:
+            row = await cur.fetchone()
+            return dict(row) if row else None
 
 
 async def get_all_bloggers() -> list[dict]:

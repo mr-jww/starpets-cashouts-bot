@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS bloggers (
     name        TEXT NOT NULL,
     manager_id  INTEGER NOT NULL REFERENCES users(id),
     notes       TEXT,
+    is_active   INTEGER NOT NULL DEFAULT 1,
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(name, manager_id)
 );
@@ -76,6 +77,7 @@ async def init_db() -> None:
         # Migrations for existing DBs
         for col, definition in [
             ("is_primary", "INTEGER NOT NULL DEFAULT 0"),
+            ("bloggers.is_active", "INTEGER NOT NULL DEFAULT 1"),
             ("manager_filter", "TEXT"),
             ("output_mode",  "TEXT NOT NULL DEFAULT 'block'"),
             ("default_fmt",  "TEXT NOT NULL DEFAULT 'oneline'"),
@@ -83,6 +85,9 @@ async def init_db() -> None:
             try:
                 if col == "is_primary":
                     await db.execute(f"ALTER TABLE payment_methods ADD COLUMN {col} {definition}")
+                elif col == "bloggers.is_active":
+                    await db.execute("ALTER TABLE bloggers ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1")
+                    await db.execute("UPDATE bloggers SET is_active = 1 WHERE is_active IS NULL")
                 else:
                     await db.execute(f"ALTER TABLE users ADD COLUMN {col} {definition}")
                     # Set default for existing rows

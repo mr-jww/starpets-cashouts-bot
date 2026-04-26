@@ -74,15 +74,25 @@ def _start_text(name: str, lang: str) -> str:
 def _main_keyboard(lang: str, role: str = "manager") -> InlineKeyboardMarkup:
     if lang == "ru":
         buttons = [
-            [InlineKeyboardButton("📋 Инструкция", callback_data="show_help")],
-            [InlineKeyboardButton("⚙️ Настройки",  callback_data="show_settings")],
+            [
+                InlineKeyboardButton("➕ Блогер",   callback_data="bl_add_blogger"),
+                InlineKeyboardButton("💳 Метод",    callback_data="bl_add_method"),
+            ],
+            [InlineKeyboardButton("💸 Заказать выплату", callback_data="nav_payout_hint")],
+            [InlineKeyboardButton("📋 Инструкция", callback_data="show_help"),
+             InlineKeyboardButton("⚙️ Настройки",  callback_data="show_settings")],
         ]
         if role == "admin":
             buttons.append([InlineKeyboardButton("🔧 Админ", callback_data="show_admin_hint")])
     else:
         buttons = [
-            [InlineKeyboardButton("📋 Instructions", callback_data="show_help")],
-            [InlineKeyboardButton("⚙️ Settings",     callback_data="show_settings")],
+            [
+                InlineKeyboardButton("➕ Blogger",  callback_data="bl_add_blogger"),
+                InlineKeyboardButton("💳 Method",   callback_data="bl_add_method"),
+            ],
+            [InlineKeyboardButton("💸 Create payout", callback_data="nav_payout_hint")],
+            [InlineKeyboardButton("📋 Instructions", callback_data="show_help"),
+             InlineKeyboardButton("⚙️ Settings",     callback_data="show_settings")],
         ]
         if role == "admin":
             buttons.append([InlineKeyboardButton("🔧 Admin", callback_data="show_admin_hint")])
@@ -423,6 +433,17 @@ async def cb_go_import(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(text, reply_markup=_back_keyboard(lang))
 
 
+
+async def cb_nav_payout_hint(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user = await get_user(update.effective_user.id)
+    lang = get_lang(user) if user else "en"
+    await query.answer(
+        "Нажмите 💸 Payout внизу экрана" if lang == "ru" else "Press 💸 Payout at the bottom",
+        show_alert=False,
+    )
+
+
 # --------------------------------------------------------------------------- #
 # /settings (command)
 # --------------------------------------------------------------------------- #
@@ -723,6 +744,7 @@ def register_start_handlers(app):
     app.add_handler(CallbackQueryHandler(cb_toggle_output_mode,  pattern=r"^toggle_output_mode$"))
     app.add_handler(CallbackQueryHandler(cb_toggle_default_fmt,   pattern=r"^toggle_default_fmt$"))
     app.add_handler(CallbackQueryHandler(cb_go_import,            pattern=r"^go_import$"))
+    app.add_handler(CallbackQueryHandler(cb_nav_payout_hint,       pattern=r"^nav_payout_hint$"))
     app.add_handler(CallbackQueryHandler(cb_rf_toggle,       pattern=r"^rf_toggle:"))
 
     # Manager name input (outside conversation, triggered by awaiting_mgr flag)
