@@ -12,10 +12,7 @@ _METHOD_LABELS: dict[str, dict[str, str]] = {
     "paypal":     {"ru": "PayPal",     "en": "PayPal"},
 }
 
-_NOTICE = {
-    "ru": "⚠ ЕСТЬ ОШИБКА",
-    "en": "⚠ HAS ERROR",
-}
+
 
 
 def _method_label(method_type: str, lang: str) -> str:
@@ -26,11 +23,11 @@ def _header(result: BloggerResult, lang: str) -> str:
     games_str = ", ".join(result.games) if result.games else "?"
     if lang == "ru":
         return (
-            f"{result.total_price} для {result.blogger} "
+            f"{result.total_price_display} для {result.blogger} "
             f"за {result.video_count} видео по {games_str}:"
         )
     return (
-        f"{result.total_price} for {result.blogger} "
+        f"{result.total_price_display} for {result.blogger} "
         f"for {result.video_count} videos on {games_str}:"
     )
 
@@ -60,8 +57,6 @@ def format_oneline(
     items  = " ".join(_item(r, lang) for r in result.rows)
     footer = _footer(method_type, address, lang)
     body   = f"{header} {items}\n{footer}"
-    if result.has_errors:
-        return f"{_NOTICE[lang]}\n{body}"
     return body
 
 
@@ -83,8 +78,6 @@ def format_multiline(
     items  = "\n".join(_item(r, lang) for r in result.rows)
     footer = _footer(method_type, address, lang)
     body   = f"{header}\n{items}\n{footer}"
-    if result.has_errors:
-        return f"{_NOTICE[lang]}\n{body}"
     return body
 
 

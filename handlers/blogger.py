@@ -25,7 +25,7 @@ from database.queries import (
     METHOD_TYPES, METHOD_LABELS,
 )
 from services.logger import log_info, log_warn
-from handlers.common import get_user_or_reject, get_lang
+from handlers.common import get_user_or_reject, get_lang, nav_keyboard
 
 # ConversationHandler states
 (
@@ -115,13 +115,17 @@ async def _save_blogger(update, context, notes, lang):
     if lang == "ru":
         await update.message.reply_text(
             f"Блогер «{name}» добавлен.\n"
-            "Теперь добавьте способ оплаты командой /add_method"
+            "Теперь добавьте способ оплаты: /add_method",
+            reply_markup=nav_keyboard(lang),
         )
     else:
         await update.message.reply_text(
             f"Blogger '{name}' added.\n"
-            "Now add a payment method with /add_method"
+            "Now add a payment method: /add_method",
+            reply_markup=nav_keyboard(lang),
         )
+    # Clear user_data to prevent state leakage into next conversation
+    context.user_data.clear()
     return ConversationHandler.END
 
 
@@ -313,11 +317,13 @@ async def _save_method(update, context, lang):
     type_label = METHOD_LABELS.get(method_type, method_type)
     if lang == "ru":
         await update.message.reply_text(
-            f"Способ оплаты добавлен:\n{blogger_name} — {type_label}: {address}"
+            f"Способ оплаты добавлен:\n{blogger_name} — {type_label}: {address}",
+            reply_markup=nav_keyboard(lang),
         )
     else:
         await update.message.reply_text(
-            f"Payment method added:\n{blogger_name} — {type_label}: {address}"
+            f"Payment method added:\n{blogger_name} — {type_label}: {address}",
+            reply_markup=nav_keyboard(lang),
         )
     return ConversationHandler.END
 

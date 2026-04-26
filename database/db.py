@@ -19,7 +19,9 @@ CREATE TABLE IF NOT EXISTS users (
     role        TEXT NOT NULL DEFAULT 'manager',
     lang        TEXT NOT NULL DEFAULT 'ru',
     manager_filter TEXT,
-    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    output_mode  TEXT NOT NULL DEFAULT 'block',
+    default_fmt  TEXT NOT NULL DEFAULT 'oneline',
+    created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS bloggers (
@@ -75,12 +77,19 @@ async def init_db() -> None:
         for col, definition in [
             ("is_primary", "INTEGER NOT NULL DEFAULT 0"),
             ("manager_filter", "TEXT"),
+            ("output_mode",  "TEXT NOT NULL DEFAULT 'block'"),
+            ("default_fmt",  "TEXT NOT NULL DEFAULT 'oneline'"),
         ]:
             try:
                 if col == "is_primary":
                     await db.execute(f"ALTER TABLE payment_methods ADD COLUMN {col} {definition}")
                 else:
                     await db.execute(f"ALTER TABLE users ADD COLUMN {col} {definition}")
+                    # Set default for existing rows
+                    if col == "output_mode":
+                        await db.execute("UPDATE users SET output_mode = 'block' WHERE output_mode IS NULL")
+                    elif col == "default_fmt":
+                        await db.execute("UPDATE users SET default_fmt = 'oneline' WHERE default_fmt IS NULL")
             except Exception:
                 pass  # Column already exists
         await db.commit()

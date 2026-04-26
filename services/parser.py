@@ -2,16 +2,8 @@
 Parser for rows copy-pasted from Google Sheets tracker.
 
 Auto-detects table type by column count:
-  splite  — 13 cols:
-    Blogger | Language | Platform | Link | Status | Date | Views |
-    Rate | Price | PayMethod | PayStatus | Content | Manager
-
-  ammm2   — 15 cols:
-    Blogger | New/Old | Language | Platform | Link | Status | Date |
-    Views | Price | PayMethod | PayStatus | PayDate |
-    IntType(AM/MM2) | IntType | Manager
-
-Returns ParseResult with one BloggerResult per unique blogger.
+  splite  - 13 cols (14 with Comment, ignored)
+  ammm2   - 15 cols (16 with Comments, ignored)
 """
 
 from __future__ import annotations
@@ -19,20 +11,27 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
-ERR = {
-    "ru": "ERR:ПУСТО",
-    "en": "ERR:EMPTY",
+ERR = {"ru": "ERR:ПУСТО", "en": "ERR:EMPTY"}
+
+_PLATFORM_MAP = {
+    "youtube": "YouTube", "instagram": "Instagram",
+    "tiktok": "TikTok", "tik tok": "TikTok", "facebook": "Facebook",
 }
 
-# --------------------------------------------------------------------------- #
-# Platform normalisation
-# --------------------------------------------------------------------------- #
-_PLATFORM_MAP = {
-    "youtube":   "YouTube",
-    "instagram": "Instagram",
-    "tiktok":    "TikTok",
-    "tik tok":   "TikTok",
-    "facebook":  "Facebook",
+_METHOD_MAP = {
+    "site": "site", "paypal": "paypal",
+    "usdt": "usdt-trc20", "usdt-trc20": "usdt-trc20", "crypto": "usdt-trc20",
+}
+
+_CURRENCY_SYMBOLS = ["$", "€", "₽"]
+
+_ERR_DESCRIPTIONS = {
+    "date":     {"ru": "отсутствует дата",         "en": "missing date"},
+    "views":    {"ru": "отсутствуют просмотры",    "en": "missing views"},
+    "price":    {"ru": "отсутствует цена",         "en": "missing price"},
+    "platform": {"ru": "отсутствует платформа",    "en": "missing platform"},
+    "game":     {"ru": "отсутствует игра",         "en": "missing game"},
+    "method":   {"ru": "отсутствует метод оплаты", "en": "missing payment method"},
 }
 
 
@@ -46,27 +45,20 @@ def _normalise_platform(raw: str, link: str, lang: str) -> str:
     return platform
 
 
-# --------------------------------------------------------------------------- #
-# Payment method normalisation
-# --------------------------------------------------------------------------- #
-_METHOD_MAP = {
-    "site":       "site",
-    "paypal":     "paypal",
-    "usdt":       "usdt-trc20",
-    "usdt-trc20": "usdt-trc20",
-    "crypto":     "usdt-trc20",
-}
-
-
 def _normalise_method(raw: str) -> str:
+    if not raw or not raw.strip():
+        return ""
     return _METHOD_MAP.get(raw.strip().lower(), raw.strip().lower())
 
 
-# --------------------------------------------------------------------------- #
-# Number helpers
-# --------------------------------------------------------------------------- #
+def _detect_currency(price_raw: str) -> str:
+    for sym in _CURRENCY_SYMBOLS:
+        if sym in price_raw:
+            return sym
+    return "$"
+
+
 def _parse_views(raw: str) -> Optional[int]:
-    # Strip all known space/separator variants, then try int
     cleaned = raw.strip()
     for ch in ("\u00a0", "\u202f", "\u2009", "\u0020", " ", "\xa0", ",", "."):
         cleaned = cleaned.replace(ch, "")
@@ -80,9 +72,6 @@ def _format_views(views: int) -> str:
     return f"{views:,}".replace(",", " ")
 
 
-# --------------------------------------------------------------------------- #
-# Junk line detection
-# --------------------------------------------------------------------------- #
 def _is_junk_line(parts: list[str]) -> bool:
     if not any(p.strip() for p in parts):
         return True
@@ -94,24 +83,23 @@ def _is_junk_line(parts: list[str]) -> bool:
     return False
 
 
-# --------------------------------------------------------------------------- #
-# Data structures
-# --------------------------------------------------------------------------- #
 @dataclass
 class VideoRow:
-    blogger:      str
-    platform:     str
-    link:         str
-    date:         str
-    views_raw:    str
-    views:        Optional[int]
-    price:        str
-    pay_method:   str
-    game:         str
-    mode:         str
-    manager:      str = ""
-    has_error:    bool = False
-    error_fields: list[str] = field(default_factory=list)
+    blogger:       str
+    platform:      str
+    link:          str
+    date:          str
+    views_raw:     str
+    views:         Optional[int]
+    price:         str
+    currency:      str
+    pay_method:    str
+    game:          str
+    mode:          str
+    manager:       str = ""
+    has_error:     bool = False
+    error_fields:  list[str] = field(default_factory=list)
+    error_details: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -133,16 +121,29 @@ class BloggerResult:
         return seen
 
     @property
+    def currency(self) -> str:
+        currencies = [r.currency for r in self.rows if r.currency]
+        if not currencies:
+            return "$"
+        return max(set(currencies), key=currencies.count)
+
+    @property
     def total_price(self) -> str:
         total = 0.0
+        sym = self.currency
         for row in self.rows:
             if row.price and not row.price.startswith("ERR:"):
                 try:
-                    val = row.price.replace("$", "").replace(",", ".").strip()
+                    val = row.price.replace(sym, "").replace(",", ".").strip()
                     total += float(val)
                 except ValueError:
                     pass
-        return "$" + f"{total:.1f}".replace(".", ",")
+        return sym + f"{total:.1f}".replace(".", ",")
+
+    @property
+    def total_price_display(self) -> str:
+        raw = self.total_price
+        return f"⚠️ERROR:{raw}" if self.has_errors else raw
 
     @property
     def has_errors(self) -> bool:
@@ -150,12 +151,23 @@ class BloggerResult:
 
     @property
     def pay_method_type(self) -> str:
-        if not self.rows:
-            return ""
-        methods = [r.pay_method.strip().lower() for r in self.rows if r.pay_method]
+        methods = [r.pay_method for r in self.rows if r.pay_method]
         if not methods:
             return ""
         return max(set(methods), key=methods.count)
+
+    def error_summary(self, lang: str) -> str:
+        lines = []
+        for i, row in enumerate(self.rows, 1):
+            if row.has_error:
+                platform = row.platform if not row.platform.startswith("ERR:") else "?"
+                date = row.date if not row.date.startswith("ERR:") else "?"
+                details = ", ".join(row.error_details)
+                if lang == "ru":
+                    lines.append(f"  Строка {i} ({platform}, {date}): {details}")
+                else:
+                    lines.append(f"  Row {i} ({platform}, {date}): {details}")
+        return "\n".join(lines)
 
 
 @dataclass
@@ -164,85 +176,93 @@ class ParseResult:
     critical_errors: list[str] = field(default_factory=list)
     mode:            str = "splite"
 
+    @property
+    def bloggers_with_errors(self) -> list[BloggerResult]:
+        return [b for b in self.bloggers if b.has_errors]
 
-# --------------------------------------------------------------------------- #
-# Mode detection
-# --------------------------------------------------------------------------- #
+
 def _detect_mode(parts: list[str]) -> str:
     return "ammm2" if len(parts) >= 15 else "splite"
 
 
-# --------------------------------------------------------------------------- #
-# Row parsers
-# --------------------------------------------------------------------------- #
+def _build_errors(date, views_display, price, platform, game, pay_method, err, lang):
+    ef, ed = [], []
+    for fname, val in [("date", date), ("views", views_display),
+                       ("price", price), ("platform", platform), ("game", game)]:
+        if val == err:
+            ef.append(fname)
+            ed.append(_ERR_DESCRIPTIONS[fname][lang])
+    if not pay_method:
+        ef.append("method")
+        ed.append(_ERR_DESCRIPTIONS["method"][lang])
+    return ef, ed
+
+
 def _parse_splite_row(parts: list[str], lang: str) -> VideoRow:
-    err           = ERR[lang]
-    blogger       = parts[0].strip()
-    platform      = _normalise_platform(parts[2].strip(), parts[3].strip(), lang)
-    link          = parts[3].strip()
-    date          = parts[5].strip() or err
-    views_str     = parts[6].strip()
-    price         = parts[8].strip() or err
-    pay_method    = _normalise_method(parts[9].strip())
-    game          = parts[11].strip() or err
-
-    views         = _parse_views(views_str) if views_str else None
-    views_display = _format_views(views) if views is not None else err
-
-    error_fields = []
-    if date == err:          error_fields.append("date")
-    if views_display == err: error_fields.append("views")
-    if price == err:         error_fields.append("price")
-    if platform == err:      error_fields.append("platform")
-    if game == err:          error_fields.append("game")
-
-    manager = parts[12].strip() if len(parts) > 12 else ""
+    err = ERR[lang]
+    blogger  = parts[0].strip()
+    platform = _normalise_platform(parts[2].strip(), parts[3].strip(), lang)
+    link     = parts[3].strip()
+    date     = parts[5].strip() or err
+    views_s  = parts[6].strip()
+    price_r  = parts[8].strip()
+    price    = price_r or err
+    currency = _detect_currency(price_r) if price_r else "$"
+    method   = _normalise_method(parts[9].strip())
+    game     = parts[11].strip() or err
+    views    = _parse_views(views_s) if views_s else None
+    vdisp    = _format_views(views) if views is not None else err
+    manager  = parts[12].strip() if len(parts) > 12 else ""
+    ef, ed   = _build_errors(date, vdisp, price, platform, game, method, err, lang)
     return VideoRow(
-        blogger=blogger, platform=platform, link=link,
-        date=date, views_raw=views_display, views=views,
-        price=price, pay_method=pay_method, game=game,
-        mode="splite", manager=manager, has_error=bool(error_fields),
-        error_fields=error_fields,
+        blogger=blogger, platform=platform, link=link, date=date,
+        views_raw=vdisp, views=views, price=price, currency=currency,
+        pay_method=method, game=game, mode="splite", manager=manager,
+        has_error=bool(ef), error_fields=ef, error_details=ed,
     )
 
 
 def _parse_ammm2_row(parts: list[str], lang: str) -> VideoRow:
-    err           = ERR[lang]
-    blogger       = parts[0].strip()
-    platform      = _normalise_platform(parts[3].strip(), parts[4].strip(), lang)
-    link          = parts[4].strip()
-    date          = parts[6].strip() or err
-    views_str     = parts[7].strip()
-    price         = parts[8].strip() or err
-    pay_method    = _normalise_method(parts[9].strip())
-    game          = parts[12].strip() or err
-
-    views         = _parse_views(views_str) if views_str else None
-    views_display = _format_views(views) if views is not None else err
-
-    error_fields = []
-    if date == err:          error_fields.append("date")
-    if views_display == err: error_fields.append("views")
-    if price == err:         error_fields.append("price")
-    if platform == err:      error_fields.append("platform")
-    if game == err:          error_fields.append("game")
-
-    manager = parts[14].strip() if len(parts) > 14 else ""
+    err = ERR[lang]
+    blogger  = parts[0].strip()
+    platform = _normalise_platform(parts[3].strip(), parts[4].strip(), lang)
+    link     = parts[4].strip()
+    date     = parts[6].strip() or err
+    views_s  = parts[7].strip()
+    price_r  = parts[8].strip()
+    price    = price_r or err
+    currency = _detect_currency(price_r) if price_r else "$"
+    method   = _normalise_method(parts[9].strip())
+    game     = parts[12].strip() or err
+    views    = _parse_views(views_s) if views_s else None
+    vdisp    = _format_views(views) if views is not None else err
+    manager  = parts[14].strip() if len(parts) > 14 else ""
+    ef, ed   = _build_errors(date, vdisp, price, platform, game, method, err, lang)
     return VideoRow(
-        blogger=blogger, platform=platform, link=link,
-        date=date, views_raw=views_display, views=views,
-        price=price, pay_method=pay_method, game=game,
-        mode="ammm2", manager=manager, has_error=bool(error_fields),
-        error_fields=error_fields,
+        blogger=blogger, platform=platform, link=link, date=date,
+        views_raw=vdisp, views=views, price=price, currency=currency,
+        pay_method=method, game=game, mode="ammm2", manager=manager,
+        has_error=bool(ef), error_fields=ef, error_details=ed,
     )
 
 
-# --------------------------------------------------------------------------- #
-# Main entry point
-# --------------------------------------------------------------------------- #
+
+def _split_row(line: str) -> list[str]:
+    """
+    Split a spreadsheet row preserving empty cells.
+    Tab-separated: split by tab (empty cells = empty strings naturally).
+    Space-separated: 4+ spaces = separator + empty cell, 2-3 spaces = separator.
+    """
+    if "\t" in line:
+        return [p.strip() for p in line.split("\t")]
+    # Normalize space runs: 4+ spaces -> double tab (empty cell), 2-3 -> single tab
+    normalized = re.sub(r" {4,}", "\t\t", line)
+    normalized = re.sub(r" {2,3}", "\t", normalized)
+    return [p.strip() for p in normalized.split("\t")]
+
+
 def parse_rows(text: str, lang: str = "ru") -> ParseResult:
     result = ParseResult()
-    # Strip \r (CRLF from Windows/Google Sheets copy-paste)
     text = text.replace("\r", "")
     lines = text.strip().splitlines()
     detected_mode: Optional[str] = None
@@ -251,20 +271,14 @@ def parse_rows(text: str, lang: str = "ru") -> ParseResult:
     for line_no, line in enumerate(lines, start=1):
         if not line.strip():
             continue
-
-        parts = line.split("\t") if "\t" in line else re.split(r"  +", line)
-        parts = [p.strip() for p in parts]
-
+        parts = _split_row(line)
         if _is_junk_line(parts):
             continue
-
         if detected_mode is None:
             detected_mode = _detect_mode(parts)
             result.mode = detected_mode
-
         mode = detected_mode
         min_cols = 13 if mode == "splite" else 15
-
         if len(parts) < min_cols:
             result.critical_errors.append(
                 f"Строка {line_no}: недостаточно столбцов ({len(parts)} из {min_cols})"
@@ -272,26 +286,17 @@ def parse_rows(text: str, lang: str = "ru") -> ParseResult:
                 f"Line {line_no}: not enough columns ({len(parts)} of {min_cols})"
             )
             continue
-
         blogger_name = parts[0].strip()
         if not blogger_name:
             result.critical_errors.append(
-                f"Строка {line_no}: отсутствует имя блогера — строка пропущена"
+                f"Строка {line_no}: отсутствует имя блогера"
                 if lang == "ru" else
-                f"Line {line_no}: blogger name is missing — row skipped"
+                f"Line {line_no}: blogger name is missing"
             )
             continue
-
-        row = (
-            _parse_splite_row(parts, lang)
-            if mode == "splite"
-            else _parse_ammm2_row(parts, lang)
-        )
-
+        row = _parse_splite_row(parts, lang) if mode == "splite" else _parse_ammm2_row(parts, lang)
         if blogger_name not in blogger_map:
-            blogger_map[blogger_name] = BloggerResult(
-                blogger=blogger_name, mode=mode
-            )
+            blogger_map[blogger_name] = BloggerResult(blogger=blogger_name, mode=mode)
         blogger_map[blogger_name].rows.append(row)
 
     result.bloggers = list(blogger_map.values())

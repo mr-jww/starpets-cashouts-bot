@@ -67,14 +67,14 @@ print("\n--- ERR notice ---")
 r_err = parse_rows(AMMM2_ERR, "ru")
 b_err = r_err.bloggers[0]
 out_err = format_oneline(b_err, "site", "abc123", "ru")
-check("ЕСТЬ ОШИБКА prefix",       out_err.startswith("⚠ ЕСТЬ ОШИБКА"))
+check("⚠️ERROR: in err block RU",   "⚠️ERROR:" in out_err)
 check("ERR:ПУСТО in body",        "ERR:ПУСТО" in out_err)
 
 print("\n--- EN ERR notice ---")
 r_err_en = parse_rows(AMMM2_ERR, "en")
 b_err_en = r_err_en.bloggers[0]
 out_err_en = format_oneline(b_err_en, "site", "abc123", "en")
-check("HAS ERROR prefix",         out_err_en.startswith("⚠ HAS ERROR"))
+check("⚠️ERROR: в сумме EN",       "⚠️ERROR:" in out_err_en)
 check("ERR:EMPTY in body",        "ERR:EMPTY" in out_err_en)
 
 print("\n--- USDT-TRC20 method ---")

@@ -229,6 +229,26 @@ async def set_primary_method(method_id: int, blogger_id: int) -> None:
         await db.commit()
 
 
+
+
+async def set_default_fmt(telegram_id: int, fmt: str) -> None:
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE users SET default_fmt = ? WHERE telegram_id = ?",
+            (fmt, telegram_id),
+        )
+        await db.commit()
+
+
+async def set_output_mode(telegram_id: int, mode: str) -> None:
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE users SET output_mode = ? WHERE telegram_id = ?",
+            (mode, telegram_id),
+        )
+        await db.commit()
+
+
 async def set_manager_filter(telegram_id: int, manager_name: str | None) -> None:
     async with get_db() as db:
         await db.execute(
@@ -317,6 +337,25 @@ async def save_payout(
             (blogger_id,),
         ) as cur:
             return dict(await cur.fetchone())
+
+
+
+async def get_payouts_for_blogger(blogger_id: int, limit: int = 0) -> list[dict]:
+    """limit=0 means all."""
+    async with get_db() as db:
+        sql = """
+            SELECT p.*, u.username AS manager_username
+            FROM payouts p
+            JOIN users u ON p.manager_id = u.id
+            WHERE p.blogger_id = ?
+            ORDER BY p.created_at DESC
+        """
+        params = [blogger_id]
+        if limit > 0:
+            sql += " LIMIT ?"
+            params.append(limit)
+        async with db.execute(sql, params) as cur:
+            return [dict(r) for r in await cur.fetchall()]
 
 
 async def get_recent_payouts(manager_id: int, limit: int = 20) -> list[dict]:

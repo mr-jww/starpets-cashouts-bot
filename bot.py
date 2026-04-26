@@ -5,6 +5,7 @@ StarPets CashOuts Bot — main entry point.
 import logging
 from telegram import BotCommand
 from telegram.ext import Application, ApplicationBuilder, MessageHandler, filters
+from telegram.error import BadRequest
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 import config
@@ -14,6 +15,8 @@ from handlers.start import register_start_handlers, fallback_message
 from handlers.blogger import register_blogger_handlers
 from handlers.payout import register_payout_handlers
 from handlers.admin import register_admin_handlers, _create_backup
+from handlers.history import register_history_handlers
+from handlers.import_bloggers import register_import_handlers
 
 
 # --------------------------------------------------------------------------- #
@@ -30,6 +33,8 @@ async def set_commands(app: Application):
         BotCommand("edit_method",  "Edit method / set primary"),
         BotCommand("settings",     "Language, manager name"),
         BotCommand("help",         "Commands reference"),
+        BotCommand("history",         "Payout history [blogger name]"),
+        BotCommand("import_bloggers",  "Bulk import bloggers from list or file"),
         BotCommand("cancel",       "Cancel current action"),
     ]
     await app.bot.set_my_commands(commands)
@@ -40,6 +45,18 @@ async def set_commands(app: Application):
 # Error handler
 # --------------------------------------------------------------------------- #
 async def error_handler(update, context):
+    # Ignore stale button errors from old messages after bot update
+    if isinstance(context.error, BadRequest) and "button_data_invalid" in str(context.error).lower():
+        if update and update.callback_query:
+            try:
+                await update.callback_query.answer(
+                    "Кнопка устарела, запросите выплату заново. / Button expired, request payout again.",
+                    show_alert=True,
+                )
+            except Exception:
+                pass
+        return
+
     logging.getLogger("starpets").error(
         f"[system] UNHANDLED_ERROR | error={context.error}",
         exc_info=context.error,
@@ -98,6 +115,8 @@ def main():
     register_blogger_handlers(app)
     register_payout_handlers(app)
     register_admin_handlers(app)
+    register_history_handlers(app)
+    register_import_handlers(app)
 
     # Group 1 — fallback for plain text outside any active conversation
     app.add_handler(

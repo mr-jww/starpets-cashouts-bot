@@ -9,7 +9,7 @@ from telegram.ext import (
     MessageHandler, ConversationHandler, filters,
 )
 
-from database.queries import upsert_user, get_user, set_user_lang, set_manager_filter, db_log
+from database.queries import upsert_user, get_user, set_user_lang, set_manager_filter, set_output_mode, set_default_fmt, db_log
 from services.logger import log_info
 from handlers.common import get_user_or_reject, get_lang
 from config import ADMIN_ID
@@ -22,13 +22,9 @@ WAIT_REFORMAT = 0
 # --------------------------------------------------------------------------- #
 # Persistent bottom keyboard (always visible)
 # --------------------------------------------------------------------------- #
-def _persistent_keyboard(lang: str, role: str = "manager") -> ReplyKeyboardMarkup:
-    if lang == "ru":
-        row1 = [KeyboardButton("🏠 Главная"), KeyboardButton("💸 Выплата")]
-        row2 = [KeyboardButton("👥 Блогеры"), KeyboardButton("⚙️ Настройки")]
-    else:
-        row1 = [KeyboardButton("🏠 Home"), KeyboardButton("💸 Payout")]
-        row2 = [KeyboardButton("👥 Bloggers"), KeyboardButton("⚙️ Settings")]
+def _persistent_keyboard(lang: str = "en", role: str = "manager") -> ReplyKeyboardMarkup:
+    row1 = [KeyboardButton("🏠 Home"), KeyboardButton("💸 Payout")]
+    row2 = [KeyboardButton("👥 Bloggers"), KeyboardButton("⚙️ Settings")]
     return ReplyKeyboardMarkup(
         [row1, row2],
         resize_keyboard=True,
@@ -189,35 +185,58 @@ async def cb_show_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def _settings_text(user: dict, lang: str) -> str:
     mgr = user.get("manager_filter") or ("не задано" if lang == "ru" else "not set")
     cur_lang = "Русский 🇷🇺" if lang == "ru" else "English 🇬🇧"
+    out_mode = user.get("output_mode") or "block"
+    out_label = ("Блок" if out_mode == "block" else "Текст") if lang == "ru" \
+                else ("Block" if out_mode == "block" else "Text")
+    def_fmt = user.get("default_fmt") or "oneline"
+    fmt_label = ("Однострочный" if def_fmt == "oneline" else "Многострочный") if lang == "ru" \
+                else ("One line" if def_fmt == "oneline" else "Multiline")
     if lang == "ru":
         return (
             f"Настройки:\n\n"
             f"Язык: {cur_lang}\n"
-            f"Имя менеджера (фильтр): {mgr}"
+            f"Имя менеджера (фильтр): {mgr}\n"
+            f"Оформление: {out_label}\n"
+            f"Формат выплаты: {fmt_label}"
         )
     return (
         f"Settings:\n\n"
         f"Language: {cur_lang}\n"
-        f"Manager name (filter): {mgr}"
+        f"Manager name (filter): {mgr}\n"
+        f"Output style: {out_label}\n"
+        f"Payout format: {fmt_label}"
     )
 
 
 def _settings_keyboard(user: dict, lang: str) -> InlineKeyboardMarkup:
+    out_mode = user.get("output_mode") or "block"
+    def_fmt  = user.get("default_fmt") or "oneline"
     if lang == "ru":
+        # Buttons show current value, clicking toggles
+        out_btn = f"Оформление: {'Блок' if out_mode == 'block' else 'Текст'}"
+        fmt_btn = f"Формат: {'Однострочный' if def_fmt == 'oneline' else 'Многострочный'}"
         return InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("🇷🇺 Русский", callback_data="set_lang:ru"),
                 InlineKeyboardButton("🇬🇧 English", callback_data="set_lang:en"),
             ],
             [InlineKeyboardButton("👤 Изменить имя менеджера", callback_data="set_mgr")],
+            [InlineKeyboardButton(out_btn, callback_data="toggle_output_mode")],
+            [InlineKeyboardButton(fmt_btn, callback_data="toggle_default_fmt")],
+            [InlineKeyboardButton("📥 Импорт блогеров", callback_data="go_import")],
             [InlineKeyboardButton("← Назад", callback_data="show_start")],
         ])
+    out_btn = f"Style: {'Block' if out_mode == 'block' else 'Text'}"
+    fmt_btn = f"Format: {'One line' if def_fmt == 'oneline' else 'Multiline'}"
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🇷🇺 Русский", callback_data="set_lang:ru"),
             InlineKeyboardButton("🇬🇧 English", callback_data="set_lang:en"),
         ],
         [InlineKeyboardButton("👤 Set manager name", callback_data="set_mgr")],
+        [InlineKeyboardButton(out_btn, callback_data="toggle_output_mode")],
+        [InlineKeyboardButton(fmt_btn, callback_data="toggle_default_fmt")],
+        [InlineKeyboardButton("📥 Import bloggers", callback_data="go_import")],
         [InlineKeyboardButton("← Back", callback_data="show_start")],
     ])
 
@@ -342,6 +361,68 @@ async def cb_show_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+
+async def cb_toggle_output_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user = await get_user(update.effective_user.id)
+    lang = get_lang(user) if user else "en"
+    current = user.get("output_mode") or "block"
+    new_mode = "text" if current == "block" else "block"
+    await set_output_mode(update.effective_user.id, new_mode)
+    user["output_mode"] = new_mode
+    user["output_mode"] = new_mode
+    await query.edit_message_text(
+        _settings_text(user, lang),
+        reply_markup=_settings_keyboard(user, lang),
+    )
+
+
+
+async def cb_toggle_default_fmt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user = await get_user(update.effective_user.id)
+    lang = get_lang(user) if user else "en"
+    current = user.get("default_fmt") or "oneline"
+    new_fmt = "multiline" if current == "oneline" else "oneline"
+    await set_default_fmt(update.effective_user.id, new_fmt)
+    user["default_fmt"] = new_fmt
+    await query.edit_message_text(
+        _settings_text(user, lang),
+        reply_markup=_settings_keyboard(user, lang),
+    )
+
+
+
+async def cb_go_import(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user = await get_user(update.effective_user.id)
+    lang = get_lang(user) if user else "en"
+    if lang == "ru":
+        text = (
+            "Для импорта блогеров используйте /import_bloggers\n\n"
+            "Формат (tab-разделитель):\n"
+            "имя\tSite_ID\tUSDT-TRC20\tPayPal\tосновной\n\n"
+            "Пример:\n"
+            "braba7x.ff1\t690779e7e54ed806\t\t\tsite\n"
+            "taypk7\t\tTLBwE3pdG9UY...\t\tusdt-trc20\n\n"
+            "Пустые ячейки — пропускать. Хотя бы один метод обязателен."
+        )
+    else:
+        text = (
+            "To import bloggers use /import_bloggers\n\n"
+            "Format (tab-separated):\n"
+            "name\tSite_ID\tUSDT-TRC20\tPayPal\tprimary\n\n"
+            "Example:\n"
+            "braba7x.ff1\t690779e7e54ed806\t\t\tsite\n"
+            "taypk7\t\tTLBwE3pdG9UY...\t\tusdt-trc20\n\n"
+            "Empty cells — skip. At least one method required."
+        )
+    await query.edit_message_text(text, reply_markup=_back_keyboard(lang))
+
+
 # --------------------------------------------------------------------------- #
 # /settings (command)
 # --------------------------------------------------------------------------- #
@@ -369,6 +450,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Команды:\n\n"
             "/payout [amb-Name|amb-all] — оформить выплату\n"
             "/reformat — переформатировать готовый блок\n"
+            "/import_bloggers — импорт блогеров из списка или файла\n"
             "/add_blogger — добавить блогера\n"
             "/bloggers — список блогеров\n"
             "/add_method — добавить метод оплаты\n"
@@ -382,6 +464,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Commands:\n\n"
             "/payout [amb-Name|amb-all] — create payout\n"
             "/reformat — reformat existing payout block\n"
+            "/import_bloggers — bulk import bloggers from list or file\n"
             "/add_blogger — add a blogger\n"
             "/bloggers — list bloggers\n"
             "/add_method — add payment method\n"
@@ -562,19 +645,27 @@ async def cmd_cancel_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --------------------------------------------------------------------------- #
 async def fallback_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("awaiting_mgr"):
-        await handle_mgr_input(update, context)
+        text = (update.message.text or "").strip()
+        if text.lower() in {"/skip", "skip"}:
+            await handle_mgr_skip(update, context)
+        else:
+            await handle_mgr_input(update, context)
         return
 
     text = (update.message.text or "").strip()
+
+    # 💸 button is handled by ConversationHandler entry_point — ignore here
+    if text in {"💸", "💸 Payout", "💸 Выплата"} or text.startswith("💸"):
+        return
     user = await get_user(update.effective_user.id)
     lang = get_lang(user) if user else "en"
     role = user["role"] if user else "manager"
 
     # Handle persistent keyboard buttons
-    home_labels   = {"🏠 Home", "🏠 Главная"}
-    payout_labels = set()  # handled as ConversationHandler entry_point
-    bloggers_labels = {"👥 Bloggers", "👥 Блогеры"}
-    settings_labels = {"⚙️ Settings", "⚙️ Настройки"}
+    home_labels   = {"🏠 Home", "🏠 Главная", "🏠"}
+    payout_labels = set()  # 💸 handled as ConversationHandler entry_point
+    bloggers_labels = {"👥 Bloggers", "👥 Блогеры", "👥", "👥 Bloggers"}
+    settings_labels = {"⚙️ Settings", "⚙️ Настройки", "⚙️"}
 
     tg = update.effective_user
     if text in home_labels:
@@ -628,8 +719,10 @@ def register_start_handlers(app):
     app.add_handler(CallbackQueryHandler(cb_show_admin_hint, pattern=r"^show_admin_hint$"))
     app.add_handler(CallbackQueryHandler(cb_show_start,      pattern=r"^show_start$"))
     app.add_handler(CallbackQueryHandler(cb_set_lang,        pattern=r"^set_lang:"))
-    app.add_handler(CallbackQueryHandler(cb_set_mgr,         pattern=r"^set_mgr$"))
+    app.add_handler(CallbackQueryHandler(cb_set_mgr,             pattern=r"^set_mgr$"))
+    app.add_handler(CallbackQueryHandler(cb_toggle_output_mode,  pattern=r"^toggle_output_mode$"))
+    app.add_handler(CallbackQueryHandler(cb_toggle_default_fmt,   pattern=r"^toggle_default_fmt$"))
+    app.add_handler(CallbackQueryHandler(cb_go_import,            pattern=r"^go_import$"))
     app.add_handler(CallbackQueryHandler(cb_rf_toggle,       pattern=r"^rf_toggle:"))
 
     # Manager name input (outside conversation, triggered by awaiting_mgr flag)
-    app.add_handler(CommandHandler("skip", handle_mgr_skip))

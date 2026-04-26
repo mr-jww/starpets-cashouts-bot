@@ -7,7 +7,7 @@ Shared utilities for handlers:
 
 from __future__ import annotations
 from functools import wraps
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from database.queries import get_user
 from config import ADMIN_ID
@@ -46,3 +46,14 @@ def admin_only(func):
             return
         return await func(update, context)
     return wrapper
+
+
+def nav_keyboard(lang: str) -> InlineKeyboardMarkup:
+    """Navigation keyboard for end-of-flow messages."""
+    if lang == "ru":
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("🏠 Главная", callback_data="nav_home")],
+        ])
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏠 Home", callback_data="nav_home")],
+    ])
