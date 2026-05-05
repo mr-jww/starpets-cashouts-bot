@@ -9,7 +9,7 @@ from telegram.ext import (
     MessageHandler, ConversationHandler, filters,
 )
 
-from database.queries import upsert_user, get_user, set_user_lang, set_manager_filter, set_output_mode, set_default_fmt, db_log
+from database.queries import upsert_user, get_user, set_user_lang, set_manager_filter, set_output_mode, set_default_fmt, set_filter_setting, db_log
 from services.logger import log_info
 from handlers.common import get_user_or_reject, get_lang
 from config import ADMIN_ID
@@ -53,21 +53,19 @@ def _start_text(name: str, lang: str) -> str:
     if lang == "ru":
         return (
             f"Привет, {name}!\n\n"
-            "Бот для формирования выплат блогерам StarPets.\n\n"
-            "Как работать:\n"
-            "1. Задайте своё имя менеджера в /settings\n"
-            "2. Добавьте блогеров через /add_blogger\n"
-            "3. Добавьте им методы оплаты через /add_method\n"
-            "4. Скопируйте строки из таблицы и отправьте /payout"
+            "Этот бот помогает оформлять выплаты блогерам StarPets. "
+            "Ты копируешь строки из таблицы – бот сам считает суммы, "
+            "подбирает реквизиты и готовит блок для бухгалтера.\n\n"
+            "Чтобы начать: укажи своё имя из таблицы в настройках, "
+            "добавь блогеров и их методы оплаты – дальше всё делается через /payout."
         )
     return (
         f"Hi, {name}!\n\n"
-        "StarPets payout bot.\n\n"
-        "Getting started:\n"
-        "1. Set your manager name in /settings\n"
-        "2. Add bloggers via /add_blogger\n"
-        "3. Add payment methods via /add_method\n"
-        "4. Copy rows from the spreadsheet and send /payout"
+        "This bot helps you process payouts for StarPets bloggers. "
+        "You paste rows from the spreadsheet – the bot calculates totals, "
+        "picks the right payment details and formats a block for the accountant.\n\n"
+        "To get started: set your manager name in settings, "
+        "add your bloggers and their payment methods – then everything goes through /payout."
     )
 
 
@@ -75,10 +73,11 @@ def _main_keyboard(lang: str, role: str = "manager") -> InlineKeyboardMarkup:
     if lang == "ru":
         buttons = [
             [
-                InlineKeyboardButton("➕ Блогер",   callback_data="bl_add_blogger"),
-                InlineKeyboardButton("💳 Метод",    callback_data="bl_add_method"),
+                InlineKeyboardButton("➕ Блогер",   callback_data="bm:add_blogger_start:home"),
+                InlineKeyboardButton("💳 Метод",    callback_data="bm:add_method_list"),
             ],
-            [InlineKeyboardButton("💸 Заказать выплату", callback_data="nav_payout_hint")],
+            [InlineKeyboardButton("💸 Заказать выплату", callback_data="start_payout"),
+             InlineKeyboardButton("🔄 Переформат", callback_data="rf_again")],
             [InlineKeyboardButton("📋 Инструкция", callback_data="show_help"),
              InlineKeyboardButton("⚙️ Настройки",  callback_data="show_settings")],
         ]
@@ -87,10 +86,11 @@ def _main_keyboard(lang: str, role: str = "manager") -> InlineKeyboardMarkup:
     else:
         buttons = [
             [
-                InlineKeyboardButton("➕ Blogger",  callback_data="bl_add_blogger"),
-                InlineKeyboardButton("💳 Method",   callback_data="bl_add_method"),
+                InlineKeyboardButton("➕ Blogger",  callback_data="bm:add_blogger_start:home"),
+                InlineKeyboardButton("💳 Method",   callback_data="bm:add_method_list"),
             ],
-            [InlineKeyboardButton("💸 Create payout", callback_data="nav_payout_hint")],
+            [InlineKeyboardButton("💸 Create payout",  callback_data="start_payout"),
+             InlineKeyboardButton("🔄 Reformat",       callback_data="rf_again")],
             [InlineKeyboardButton("📋 Instructions", callback_data="show_help"),
              InlineKeyboardButton("⚙️ Settings",     callback_data="show_settings")],
         ]
@@ -116,66 +116,46 @@ async def cb_show_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if lang == "ru":
         text = (
-            "Команды и флаги:\n\n"
-
-            "/payout\n"
-            "  Вставьте строки из таблицы следующим сообщением.\n"
-            "  Флаги (можно комбинировать):\n"
-            "  • /payout amb-John — только блогеры менеджера John\n"
-            "  • /payout amb-all  — все блогеры без фильтра\n"
-            "  Если имя менеджера задано в настройках — фильтр применяется автоматически.\n\n"
-
-            "/reformat\n"
-            "  Переформатировать готовый блок выплаты.\n"
-            "  Вставьте блок в формате:\n"
-            "  $X для Y за N видео по Z: - Platform (...) - ...\n"
-            "  Method – address\n\n"
-
-            "/add_blogger — добавить блогера\n"
-            "/bloggers — список блогеров и методов оплаты\n"
-            "/add_method — добавить метод оплаты\n"
-            "/edit_method — изменить метод / сделать основным\n"
-            "/settings — язык, имя менеджера\n"
-            "/cancel — отменить текущее действие\n\n"
-
-            "Платформы: YouTube, YouTube Shorts, TikTok, Instagram, Facebook\n"
-            "Методы: Site, USDT-TRC20, PayPal\n\n"
-
-            "Под каждым блоком выплаты:\n"
-            "[ ↕ Многострочный ]  [ 💳 Поменять метод ]"
+            "*Справка*\n\n"
+            "*/payout* – главная команда. Скопируй строки из таблицы и вставь следующим сообщением."
+            " Бот разберёт блогеров, сложит суммы и выдаст готовые блоки для бухгалтера.\n"
+            "Если в настройках задано твоё имя менеджера, фильтр по нему применится автоматически."
+            " Можно переопределить: `/payout amb-Name` – только строки Джона,"
+            " `/payout amb-all` – все строки без фильтра.\n\n"
+            "*/bloggers* – список блогеров с реквизитами. Нажми на любого, чтобы посмотреть карточку,"
+            " добавить метод оплаты, заметку или удалить запись.\n\n"
+            "*/import_bloggers* – добавить сразу нескольких блогеров из списка или файла .txt.\n"
+            "Формат строки (через Tab): `имя | Site ID | USDT-TRC20 | PayPal | основной`\n"
+            "Пустые ячейки пропускаются. Хотя бы один метод обязателен.\n\n"
+            "*/history [ник]* – история выплат конкретному блогеру.\n\n"
+            "*/reformat* – если у тебя уже есть готовый блок выплаты, эта команда переключит его"
+            " между однострочным и многострочным форматом.\n\n"
+            "*/settings* – язык, имя менеджера, формат вывода по умолчанию.\n\n"
+            "Платформы: YouTube, YouTube Shorts, TikTok, Instagram, Facebook.\n"
+            "Методы оплаты: Site, USDT-TRC20, PayPal. Валюты: $, €, ₽."
         )
     else:
         text = (
-            "Commands and flags:\n\n"
-
-            "/payout\n"
-            "  Paste spreadsheet rows as the next message.\n"
-            "  Flags (combinable):\n"
-            "  • /payout amb-John — only bloggers of manager John\n"
-            "  • /payout amb-all  — all bloggers, ignore filter\n"
-            "  If manager name is set in settings — filter applies automatically.\n\n"
-
-            "/reformat\n"
-            "  Reformat an existing payout block.\n"
-            "  Paste a block in this exact format:\n"
-            "  $X for Y for N videos on Z: - Platform (...) - ...\n"
-            "  Method – address\n\n"
-
-            "/add_blogger — add a blogger\n"
-            "/bloggers — list bloggers and payment methods\n"
-            "/add_method — add a payment method\n"
-            "/edit_method — edit method / set as primary\n"
-            "/settings — language, manager name\n"
-            "/cancel — cancel current action\n\n"
-
-            "Platforms: YouTube, YouTube Shorts, TikTok, Instagram, Facebook\n"
-            "Methods: Site, USDT-TRC20, PayPal\n\n"
-
-            "Buttons under each payout block:\n"
-            "[ ↕ Multiline ]  [ 💳 Change method ]"
+            "*Help*\n\n"
+            "*/payout* – the main command. Copy rows from the spreadsheet and paste them as the next"
+            " message. The bot will parse the bloggers, total up the amounts and produce ready-made"
+            " blocks for the accountant.\n"
+            "If your manager name is set in settings, it filters automatically."
+            " You can override: `/payout amb-Name` – only John's rows,"
+            " `/payout amb-all` – everything without a filter.\n\n"
+            "*/bloggers* – your blogger list with payment details. Tap any blogger to open their card,"
+            " add a payment method, leave a note or remove the entry.\n\n"
+            "*/import_bloggers* – add multiple bloggers at once from a list or a .txt file.\n"
+            "Row format (tab-separated): `name | Site ID | USDT-TRC20 | PayPal | primary`\n"
+            "Empty cells are skipped. At least one method is required.\n\n"
+            "*/history [username]* – payout history for a specific blogger.\n\n"
+            "*/reformat* – if you already have a finished payout block, this switches it between"
+            " one-line and multiline format.\n\n"
+            "*/settings* – language, manager name, default output format.\n\n"
+            "Platforms: YouTube, YouTube Shorts, TikTok, Instagram, Facebook.\n"
+            "Payment methods: Site, USDT-TRC20, PayPal. Currencies: $, €, ₽."
         )
-
-    await query.edit_message_text(text, reply_markup=_back_keyboard(lang))
+    await query.edit_message_text(text, reply_markup=_back_keyboard(lang), parse_mode="Markdown")
 
 
 # --------------------------------------------------------------------------- #
@@ -201,28 +181,44 @@ def _settings_text(user: dict, lang: str) -> str:
     def_fmt = user.get("default_fmt") or "oneline"
     fmt_label = ("Однострочный" if def_fmt == "oneline" else "Многострочный") if lang == "ru" \
                 else ("One line" if def_fmt == "oneline" else "Multiline")
+    ip  = bool(user.get("include_paid",    0))
+    wp  = bool(user.get("warn_paid",       1))
+    ipe = bool(user.get("include_pending", 0))
+    wpe = bool(user.get("warn_pending",    1))
     if lang == "ru":
         return (
             f"Настройки:\n\n"
             f"Язык: {cur_lang}\n"
             f"Имя менеджера (фильтр): {mgr}\n"
             f"Оформление: {out_label}\n"
-            f"Формат выплаты: {fmt_label}"
+            f"Формат выплаты: {fmt_label}\n"
+            f"PAID – включать в выплату: {'да' if ip  else 'нет'}\n"
+            f"PAID – предупреждать: {'да' if wp  else 'нет'}\n"
+            f"PENDING – включать в выплату: {'да' if ipe else 'нет'}\n"
+            f"PENDING – предупреждать: {'да' if wpe else 'нет'}"
         )
     return (
         f"Settings:\n\n"
         f"Language: {cur_lang}\n"
         f"Manager name (filter): {mgr}\n"
         f"Output style: {out_label}\n"
-        f"Payout format: {fmt_label}"
+        f"Payout format: {fmt_label}\n"
+        f"PAID – include in payout: {'yes' if ip  else 'no'}\n"
+        f"PAID – warn about: {'yes' if wp  else 'no'}\n"
+        f"PENDING – include in payout: {'yes' if ipe else 'no'}\n"
+        f"PENDING – warn about: {'yes' if wpe else 'no'}"
     )
 
 
 def _settings_keyboard(user: dict, lang: str) -> InlineKeyboardMarkup:
     out_mode = user.get("output_mode") or "block"
     def_fmt  = user.get("default_fmt") or "oneline"
+    ip  = bool(user.get("include_paid",    0))
+    wp  = bool(user.get("warn_paid",       1))
+    ipe = bool(user.get("include_pending", 0))
+    wpe = bool(user.get("warn_pending",    1))
+
     if lang == "ru":
-        # Buttons show current value, clicking toggles
         out_btn = f"Оформление: {'Блок' if out_mode == 'block' else 'Текст'}"
         fmt_btn = f"Формат: {'Однострочный' if def_fmt == 'oneline' else 'Многострочный'}"
         return InlineKeyboardMarkup([
@@ -233,9 +229,18 @@ def _settings_keyboard(user: dict, lang: str) -> InlineKeyboardMarkup:
             [InlineKeyboardButton("👤 Изменить имя менеджера", callback_data="set_mgr")],
             [InlineKeyboardButton(out_btn, callback_data="toggle_output_mode")],
             [InlineKeyboardButton(fmt_btn, callback_data="toggle_default_fmt")],
+            [
+                InlineKeyboardButton(f"PAID: {'включать' if ip else 'пропускать'}", callback_data="toggle_filter_paid"),
+                InlineKeyboardButton(f"Предупрежд.: {'вкл' if wp else 'выкл'}", callback_data="toggle_warn_paid"),
+            ],
+            [
+                InlineKeyboardButton(f"PENDING: {'включать' if ipe else 'пропускать'}", callback_data="toggle_filter_pending"),
+                InlineKeyboardButton(f"Предупрежд.: {'вкл' if wpe else 'выкл'}", callback_data="toggle_warn_pending"),
+            ],
             [InlineKeyboardButton("📥 Импорт блогеров", callback_data="go_import")],
             [InlineKeyboardButton("← Назад", callback_data="show_start")],
         ])
+
     out_btn = f"Style: {'Block' if out_mode == 'block' else 'Text'}"
     fmt_btn = f"Format: {'One line' if def_fmt == 'oneline' else 'Multiline'}"
     return InlineKeyboardMarkup([
@@ -246,6 +251,14 @@ def _settings_keyboard(user: dict, lang: str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("👤 Set manager name", callback_data="set_mgr")],
         [InlineKeyboardButton(out_btn, callback_data="toggle_output_mode")],
         [InlineKeyboardButton(fmt_btn, callback_data="toggle_default_fmt")],
+        [
+            InlineKeyboardButton(f"PAID: {'include' if ip else 'skip'}", callback_data="toggle_filter_paid"),
+            InlineKeyboardButton(f"Warn: {'on' if wp else 'off'}", callback_data="toggle_warn_paid"),
+        ],
+        [
+            InlineKeyboardButton(f"PENDING: {'include' if ipe else 'skip'}", callback_data="toggle_filter_pending"),
+            InlineKeyboardButton(f"Warn: {'on' if wpe else 'off'}", callback_data="toggle_warn_pending"),
+        ],
         [InlineKeyboardButton("📥 Import bloggers", callback_data="go_import")],
         [InlineKeyboardButton("← Back", callback_data="show_start")],
     ])
@@ -276,13 +289,33 @@ async def cb_set_mgr(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await get_user(update.effective_user.id)
     lang = get_lang(user) if user else "en"
     context.user_data["awaiting_mgr"] = True
+    context.user_data["awaiting_mgr_msg_id"] = query.message.message_id
+    cancel_kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton(
+            "✕ Убрать фильтр" if lang == "ru" else "✕ Clear filter",
+            callback_data="mgr_clear"
+        ),
+        InlineKeyboardButton(
+            "← Назад" if lang == "ru" else "← Back",
+            callback_data="show_settings"
+        ),
+    ]])
     if lang == "ru":
         await query.edit_message_text(
-            "Введите ваше имя менеджера как оно написано в столбце Manager таблицы.\n"
-            "Например: John\n\n"
-            "/skip — убрать фильтр (показывать всех)"
+            "Введите имя менеджера точно как оно написано в столбце Manager таблицы.\n\n"
+            "Если хотите убрать фильтр и видеть всех блогеров — нажмите кнопку ниже.",
+            reply_markup=cancel_kb,
         )
     else:
+        await query.edit_message_text(
+            "Enter your manager name exactly as it appears in the Manager column.\n\n"
+            "To remove the filter and see all bloggers — press the button below.",
+            reply_markup=cancel_kb,
+        )
+    return
+
+    # dead code kept for reference only
+    if False:
         await query.edit_message_text(
             "Enter your manager name exactly as it appears in the Manager column.\n"
             "Example: John\n\n"
@@ -319,10 +352,42 @@ async def handle_mgr_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = get_lang(user) if user else "en"
     await set_manager_filter(update.effective_user.id, None)
     context.user_data.pop("awaiting_mgr", None)
+    # Try to edit the original settings message; fallback to reply
+    msg_id = context.user_data.pop("awaiting_mgr_msg_id", None)
+    user["manager_filter"] = None
+    if msg_id:
+        try:
+            await update.message.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=msg_id,
+                text=_settings_text(user, lang),
+                reply_markup=_settings_keyboard(user, lang),
+            )
+            return
+        except Exception:
+            pass
     await update.message.reply_text(
-        "Фильтр сброшен. /payout будет показывать всех блогеров."
-        if lang == "ru" else
-        "Filter cleared. /payout will show all bloggers."
+        "Фильтр сброшен." if lang == "ru" else "Filter cleared.",
+        reply_markup=_settings_keyboard(user, lang),
+    )
+
+
+
+async def cb_mgr_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Clear manager filter via inline button."""
+    query = update.callback_query
+    await query.answer()
+    user = await get_user(update.effective_user.id)
+    lang = get_lang(user) if user else "en"
+    context.user_data.pop("awaiting_mgr", None)
+    context.user_data.pop("awaiting_mgr_msg_id", None)
+    await set_manager_filter(update.effective_user.id, None)
+    log_info("MGR_FILTER_CLEARED", user_id=update.effective_user.id,
+             username=update.effective_user.username)
+    user["manager_filter"] = None
+    await query.edit_message_text(
+        _settings_text(user, lang),
+        reply_markup=_settings_keyboard(user, lang),
     )
 
 
@@ -412,35 +477,86 @@ async def cb_go_import(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = get_lang(user) if user else "en"
     if lang == "ru":
         text = (
-            "Для импорта блогеров используйте /import_bloggers\n\n"
-            "Формат (tab-разделитель):\n"
-            "имя\tSite_ID\tUSDT-TRC20\tPayPal\tосновной\n\n"
+            "Массовое добавление блогеров – команда /import_bloggers.\n\n"
+            "Отправь список текстом или файлом .txt. Каждая строка – один блогер,"
+            " столбцы через Tab:\n"
+            "`имя | Site ID | USDT-TRC20 | PayPal | основной`\n\n"
             "Пример:\n"
-            "braba7x.ff1\t690779e7e54ed806\t\t\tsite\n"
-            "taypk7\t\tTLBwE3pdG9UY...\t\tusdt-trc20\n\n"
-            "Пустые ячейки — пропускать. Хотя бы один метод обязателен."
+            "`braba7x.ff1\t690779e7...\t\t\tsite`\n"
+            "`taypk7\t\tTLBwE3...\t\tusdt-trc20`"
         )
     else:
         text = (
-            "To import bloggers use /import_bloggers\n\n"
-            "Format (tab-separated):\n"
-            "name\tSite_ID\tUSDT-TRC20\tPayPal\tprimary\n\n"
+            "Bulk import – use /import_bloggers.\n\n"
+            "Send a list as text or as a .txt file. One line = one blogger,"
+            " tab-separated columns:\n"
+            "`name | Site ID | USDT-TRC20 | PayPal | primary`\n\n"
             "Example:\n"
-            "braba7x.ff1\t690779e7e54ed806\t\t\tsite\n"
-            "taypk7\t\tTLBwE3pdG9UY...\t\tusdt-trc20\n\n"
-            "Empty cells — skip. At least one method required."
+            "`braba7x.ff1\t690779e7...\t\t\tsite`\n"
+            "`taypk7\t\tTLBwE3...\t\tusdt-trc20`"
         )
     await query.edit_message_text(text, reply_markup=_back_keyboard(lang))
 
 
 
-async def cb_nav_payout_hint(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cb_start_payout(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start payout directly from inline button on home screen."""
     query = update.callback_query
+    await query.answer()
     user = await get_user(update.effective_user.id)
     lang = get_lang(user) if user else "en"
-    await query.answer(
-        "Нажмите 💸 Payout внизу экрана" if lang == "ru" else "Press 💸 Payout at the bottom",
-        show_alert=False,
+    context.user_data["user"] = user
+    context.user_data["effective_filter"] = user.get("manager_filter") or None if user else None
+    from handlers.payout import WAIT_ROWS
+    if lang == "ru":
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✕ Отмена", callback_data="payout_cancel"),
+        ]])
+        await query.message.reply_text("Вставьте строки из таблицы.", reply_markup=keyboard)
+    else:
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✕ Cancel", callback_data="payout_cancel"),
+        ]])
+        await query.message.reply_text("Paste rows from the spreadsheet.", reply_markup=keyboard)
+
+
+
+async def cb_toggle_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user = await get_user(update.effective_user.id)
+    lang = get_lang(user) if user else "en"
+    field_map = {
+        "toggle_filter_paid":    "include_paid",
+        "toggle_warn_paid":      "warn_paid",
+        "toggle_filter_pending": "include_pending",
+        "toggle_warn_pending":   "warn_pending",
+    }
+    field = field_map.get(query.data)
+    if not field:
+        return
+    default = 1 if field.startswith("warn_") else 0
+    current = bool(user.get(field, default))
+    await set_filter_setting(update.effective_user.id, field, 0 if current else 1)
+    user[field] = 0 if current else 1
+    await query.edit_message_text(
+        _settings_text(user, lang),
+        reply_markup=_settings_keyboard(user, lang),
+    )
+
+
+
+async def cb_rf_again(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start a new /reformat."""
+    query = update.callback_query
+    await query.answer()
+    user = await get_user(update.effective_user.id)
+    lang = get_lang(user) if user else "en"
+    context.user_data["rf_user"] = user
+    await query.message.reply_text(
+        "Вставьте блок для переформатирования:\n/cancel — отмена"
+        if lang == "ru" else
+        "Paste the payout block to reformat:\n/cancel — cancel"
     )
 
 
@@ -461,40 +577,36 @@ async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --------------------------------------------------------------------------- #
 # /help (command)
 # --------------------------------------------------------------------------- #
-async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):  # noqa
     user = await get_user_or_reject(update)
     if not user:
         return
     lang = get_lang(user)
     if lang == "ru":
         text = (
-            "Команды:\n\n"
-            "/payout [amb-Name|amb-all] — оформить выплату\n"
-            "/reformat — переформатировать готовый блок\n"
-            "/import_bloggers — импорт блогеров из списка или файла\n"
-            "/add_blogger — добавить блогера\n"
-            "/bloggers — список блогеров\n"
-            "/add_method — добавить метод оплаты\n"
-            "/edit_method — изменить метод / сделать основным\n"
-            "/settings — язык, имя менеджера\n"
-            "/cancel — отменить действие\n\n"
-            "Подробнее — кнопка Инструкция в /start"
+            "*Команды*\n\n"
+            "*/payout* – оформить выплаты. Флаги: `amb-Name` (только твои), `amb-all` (без фильтра)\n"
+            "*/bloggers* – блогеры, реквизиты, управление\n"
+            "*/import_bloggers* – массовое добавление из списка или файла\n"
+            "*/history [ник]* – история выплат\n"
+            "*/reformat* – сменить формат готового блока\n"
+            "*/settings* – язык, имя менеджера, формат вывода\n"
+            "*/cancel* – отменить текущее действие\n\n"
+            "Полная инструкция: кнопка _Инструкция_ на главном экране."
         )
     else:
         text = (
-            "Commands:\n\n"
-            "/payout [amb-Name|amb-all] — create payout\n"
-            "/reformat — reformat existing payout block\n"
-            "/import_bloggers — bulk import bloggers from list or file\n"
-            "/add_blogger — add a blogger\n"
-            "/bloggers — list bloggers\n"
-            "/add_method — add payment method\n"
-            "/edit_method — edit method / set as primary\n"
-            "/settings — language, manager name\n"
-            "/cancel — cancel action\n\n"
-            "Full instructions — Instructions button in /start"
+            "*Commands*\n\n"
+            "*/payout* – create payouts. Flags: `amb-Name` (yours only), `amb-all` (no filter)\n"
+            "*/bloggers* – bloggers, payment details, management\n"
+            "*/import_bloggers* – bulk import from list or file\n"
+            "*/history [username]* – payout history\n"
+            "*/reformat* – switch finished block format\n"
+            "*/settings* – language, manager name, output format\n"
+            "*/cancel* – cancel current action\n\n"
+            "Full guide: _Instructions_ button on the home screen."
         )
-    await update.message.reply_text(text)
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 
 # --------------------------------------------------------------------------- #
@@ -508,19 +620,15 @@ async def cmd_reformat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["rf_user"] = user
     if lang == "ru":
         await update.message.reply_text(
-            "Вставьте блок выплаты для переформатирования.\n"
-            "Формат строго:\n"
-            "$X для Y за N видео по Z: - Platform (...) - ...\n"
-            "Method – address\n\n"
-            "/cancel — отмена"
+            "Вставь готовый блок выплаты — однострочный или многострочный. "
+            "Бот переключит формат на противоположный.\n"
+            "/cancel – отмена"
         )
     else:
         await update.message.reply_text(
-            "Paste the payout block to reformat.\n"
-            "Strict format:\n"
-            "$X for Y for N videos on Z: - Platform (...) - ...\n"
-            "Method – address\n\n"
-            "/cancel — cancel"
+            "Paste a finished payout block – one-line or multiline. "
+            "The bot will switch it to the opposite format.\n"
+            "/cancel – cancel"
         )
     return WAIT_REFORMAT
 
@@ -606,11 +714,14 @@ async def reformat_got_block(update: Update, context: ContextTypes.DEFAULT_TYPE)
             oneline = payout_body + "\n" + method_line
             multiline = oneline
 
+    user = context.user_data.get("rf_user") or await get_user(update.effective_user.id)
+    output_mode = (user.get("output_mode") or "block") if user else "block"
     context.user_data["rf_oneline"]   = oneline
     context.user_data["rf_multiline"] = multiline
     context.user_data["rf_fmt"]       = "oneline"
+    context.user_data["rf_output_mode"] = output_mode
 
-    await _send_rf_block(update.message, oneline, "oneline", lang)
+    await _send_rf_block(update.message, oneline, "oneline", lang, output_mode)
     return ConversationHandler.END
 
 
@@ -665,13 +776,23 @@ async def cmd_cancel_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Fallback for plain text outside conversations
 # --------------------------------------------------------------------------- #
 async def fallback_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Don't interfere with active import conversation
+    if context.user_data.get("ib_user") is not None:
+        return
     if context.user_data.get("awaiting_mgr"):
         text = (update.message.text or "").strip()
-        if text.lower() in {"/skip", "skip"}:
+        # Nav keyboard buttons must not be treated as manager name input
+        _nav = {"🏠 Home", "🏠 Главная", "🏠", "💸 Payout", "💸 Выплата",
+                "👥 Bloggers", "👥 Блогеры", "⚙️ Settings", "⚙️ Настройки"}
+        if text in _nav or any(text.startswith(e) for e in ("🏠", "💸", "👥", "⚙️")):
+            context.user_data.pop("awaiting_mgr", None)
+            # Fall through to normal nav handling below
+        elif text.lower() in {"/skip", "skip"}:
             await handle_mgr_skip(update, context)
+            return
         else:
             await handle_mgr_input(update, context)
-        return
+            return
 
     text = (update.message.text or "").strip()
 
@@ -709,9 +830,9 @@ async def fallback_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text(
-        "Use /payout to create a payout or /help for instructions."
+        "To create a payout – /payout. For help – /help."
         if lang == "en" else
-        "Используйте /payout для выплаты или /help для справки."
+        "Для выплат – /payout, для справки – /help."
     )
 
 
@@ -744,7 +865,9 @@ def register_start_handlers(app):
     app.add_handler(CallbackQueryHandler(cb_toggle_output_mode,  pattern=r"^toggle_output_mode$"))
     app.add_handler(CallbackQueryHandler(cb_toggle_default_fmt,   pattern=r"^toggle_default_fmt$"))
     app.add_handler(CallbackQueryHandler(cb_go_import,            pattern=r"^go_import$"))
-    app.add_handler(CallbackQueryHandler(cb_nav_payout_hint,       pattern=r"^nav_payout_hint$"))
+    app.add_handler(CallbackQueryHandler(cb_toggle_filter, pattern=r"^toggle_(filter|warn)_(paid|pending)$"))
+    app.add_handler(CallbackQueryHandler(cb_mgr_clear,    pattern=r"^mgr_clear$"))
+    app.add_handler(CallbackQueryHandler(cb_rf_again,             pattern=r"^rf_again$"))
     app.add_handler(CallbackQueryHandler(cb_rf_toggle,       pattern=r"^rf_toggle:"))
 
     # Manager name input (outside conversation, triggered by awaiting_mgr flag)

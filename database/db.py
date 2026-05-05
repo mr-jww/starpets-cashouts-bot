@@ -20,7 +20,11 @@ CREATE TABLE IF NOT EXISTS users (
     lang        TEXT NOT NULL DEFAULT 'ru',
     manager_filter TEXT,
     output_mode  TEXT NOT NULL DEFAULT 'block',
-    default_fmt  TEXT NOT NULL DEFAULT 'oneline',
+    default_fmt       TEXT NOT NULL DEFAULT 'oneline',
+    include_paid      INTEGER NOT NULL DEFAULT 0,
+    warn_paid         INTEGER NOT NULL DEFAULT 1,
+    include_pending   INTEGER NOT NULL DEFAULT 0,
+    warn_pending      INTEGER NOT NULL DEFAULT 1,
     created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -80,7 +84,11 @@ async def init_db() -> None:
             ("bloggers.is_active", "INTEGER NOT NULL DEFAULT 1"),
             ("manager_filter", "TEXT"),
             ("output_mode",  "TEXT NOT NULL DEFAULT 'block'"),
-            ("default_fmt",  "TEXT NOT NULL DEFAULT 'oneline'"),
+            ("default_fmt",       "TEXT NOT NULL DEFAULT 'oneline'"),
+            ("include_paid",     "INTEGER NOT NULL DEFAULT 0"),
+            ("warn_paid",         "INTEGER NOT NULL DEFAULT 1"),
+            ("include_pending",   "INTEGER NOT NULL DEFAULT 0"),
+            ("warn_pending",      "INTEGER NOT NULL DEFAULT 1"),
         ]:
             try:
                 if col == "is_primary":
@@ -95,6 +103,10 @@ async def init_db() -> None:
                         await db.execute("UPDATE users SET output_mode = 'block' WHERE output_mode IS NULL")
                     elif col == "default_fmt":
                         await db.execute("UPDATE users SET default_fmt = 'oneline' WHERE default_fmt IS NULL")
+                    elif col in ("include_paid", "include_pending"):
+                        await db.execute(f"UPDATE users SET {col} = 0 WHERE {col} IS NULL")
+                    elif col in ("warn_paid", "warn_pending"):
+                        await db.execute(f"UPDATE users SET {col} = 1 WHERE {col} IS NULL")
             except Exception:
                 pass  # Column already exists
         await db.commit()

@@ -1,887 +1,749 @@
 """
-Blogger and payment method management.
+Blogger management — inline menu architecture.
 
-Commands:
-  /add_blogger [name_or_prefix]
-  /bloggers
-  /add_method [name_or_prefix]
-  /add_note [name_or_prefix]
-  /edit_method
+All navigation happens via edit_message_text (one message, no chat spam).
+Text input (address, note, name) triggers a temporary prompt message
+that gets deleted after user replies.
+
+Screen flow:
+  /bloggers → screen_list
+            → screen_blogger (card)
+              → screen_add_method_type → prompt address → screen_blogger
+              → screen_edit_note       → prompt note   → screen_blogger
+              → screen_method (method card)
+                → confirm set_primary  → screen_blogger
+                → confirm toggle       → screen_blogger
+                → prompt new_address   → screen_blogger
+              → confirm delete_blogger → screen_list
+              → confirm delete_method  → screen_blogger
+
+State stored in context.user_data:
+  bm_msg_id      — message id of the menu message (for delete/edit)
+  bm_blogger_id  — currently selected blogger id
+  bm_method_id   — currently selected method id
+  bm_action      — pending text input: 'add_address'|'edit_note'|'add_name'|'edit_address'
 """
 
 from __future__ import annotations
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telegram.ext import (
     ContextTypes, CommandHandler, MessageHandler,
-    CallbackQueryHandler, ConversationHandler, filters,
+    CallbackQueryHandler, filters,
 )
 
 from database.queries import (
     get_user, add_blogger, get_bloggers_for_manager, get_bloggers_without_method,
-    get_blogger_by_name, get_blogger_by_id, add_payment_method, get_active_methods,
-    get_all_methods, get_method_by_id, deactivate_method, deactivate_blogger,
-    reactivate_method, update_method_address, set_primary_method,
-    search_bloggers_by_prefix, update_blogger_notes, db_log,
-    METHOD_TYPES, METHOD_LABELS,
+    get_blogger_by_name, get_blogger_by_id, search_bloggers_by_prefix,
+    add_payment_method, get_active_methods, get_all_methods, get_method_by_id,
+    deactivate_method, reactivate_method, deactivate_blogger,
+    update_method_address, set_primary_method, update_blogger_notes,
+    db_log, METHOD_TYPES, METHOD_LABELS,
 )
 from services.logger import log_info
-from handlers.common import get_user_or_reject, get_lang, nav_keyboard
-
-# States
-(
-    AB_NAME, AB_NOTES,
-    AM_BLOGGER, AM_TYPE, AM_ADDRESS,
-    EM_BLOGGER, EM_METHOD, EM_ACTION, EM_NEW_ADDRESS,
-    AN_BLOGGER, AN_TEXT,
-    DEL_CONFIRM,
-) = range(12)
-
-CANCEL_TEXT = {"ru": "Отменено.", "en": "Cancelled."}
+from handlers.common import get_user_or_reject, get_lang
 
 
 # --------------------------------------------------------------------------- #
-# Prefix search helper
+# Keyboard builders
 # --------------------------------------------------------------------------- #
-async def _resolve_blogger(
-    name_or_prefix: str, manager_id: int, lang: str
-) -> tuple[dict | None, list[dict]]:
-    """
-    Returns (exact_match, candidates).
-    If exact match found -> (blogger, []).
-    If prefix matches multiple -> (None, [list]).
-    If nothing found -> (None, []).
-    """
-    exact = await get_blogger_by_name(name_or_prefix, manager_id)
-    if exact:
-        return exact, []
-    candidates = await search_bloggers_by_prefix(name_or_prefix, manager_id)
-    if len(candidates) == 1:
-        return candidates[0], []
-    return None, candidates
+def _back(label: str, cb: str) -> list:
+    return [InlineKeyboardButton(label, callback_data=cb)]
 
 
-async def _send_prefix_choice(
-    target, candidates: list[dict], cb_prefix: str, lang: str, text: str
-) -> None:
+def _kb(*rows) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(list(rows))
+
+
+# --------------------------------------------------------------------------- #
+# Screen: blogger list
+# --------------------------------------------------------------------------- #
+async def screen_list(target, user: dict, lang: str, edit: bool = True):
+    bloggers = await get_bloggers_for_manager(user["id"])
+    if not bloggers:
+        text = "У вас нет блогеров." if lang == "ru" else "You have no bloggers."
+        buttons = [[InlineKeyboardButton(
+            "➕ Добавить блогера" if lang == "ru" else "➕ Add blogger",
+            callback_data="bm:add_blogger_start"
+        )]]
+    else:
+        text = (f"Блогеры ({len(bloggers)}):" if lang == "ru" else f"Bloggers ({len(bloggers)}):")
+        buttons = []
+        for b in bloggers:
+            methods = await get_active_methods(b["id"])
+            note = f" 📝" if b.get("notes") else ""
+            no_method = " ⚠️" if not methods else ""
+            buttons.append([InlineKeyboardButton(
+                f"{b['name']}{note}{no_method}",
+                callback_data=f"bm:blogger:{b['id']}"
+            )])
+        buttons.append([InlineKeyboardButton(
+            "➕ Добавить блогера" if lang == "ru" else "➕ Add blogger",
+            callback_data="bm:add_blogger_start"
+        )])
+
+    kb = InlineKeyboardMarkup(buttons)
+    if edit and hasattr(target, "edit_message_text"):
+        await target.edit_message_text(text, reply_markup=kb)
+    elif edit and hasattr(target, "message"):
+        await target.message.edit_text(text, reply_markup=kb)
+    else:
+        return await target.reply_text(text, reply_markup=kb)
+
+
+# --------------------------------------------------------------------------- #
+# Screen: blogger card
+# --------------------------------------------------------------------------- #
+async def screen_blogger(target, blogger_id: int, lang: str, edit: bool = True):
+    b = await get_blogger_by_id(blogger_id)
+    if not b or not b.get("is_active", 1):
+        await _edit_or_reply(target, "Блогер не найден." if lang == "ru" else "Blogger not found.", edit)
+        return
+
+    methods = await get_active_methods(blogger_id)
+    lines = [f"👤 {b['name']}"]
+    if b.get("notes"):
+        lines.append(f"📝 {b['notes']}")
+    if methods:
+        for m in methods:
+            star = " ★" if m.get("is_primary") else ""
+            lines.append(f"  {METHOD_LABELS.get(m['type'], m['type'])}: {m['address']}{star}")
+    else:
+        lines.append("  " + ("нет методов оплаты" if lang == "ru" else "no payment methods"))
+
+    text = "\n".join(lines)
+
+    buttons = []
+    # Method buttons
+    for m in methods:
+        star = "★ " if m.get("is_primary") else ""
+        label = f"{star}{METHOD_LABELS.get(m['type'], m['type'])}: {m['address'][:24]}..."
+        buttons.append([InlineKeyboardButton(label, callback_data=f"bm:method:{m['id']}")])
+
+    # Actions
+    if lang == "ru":
+        row_actions = [
+            InlineKeyboardButton("➕ Метод", callback_data=f"bm:add_method_type:{blogger_id}"),
+            InlineKeyboardButton("📝 Заметка", callback_data=f"bm:edit_note:{blogger_id}"),
+        ]
+        if b.get("notes"):
+            row_actions.append(InlineKeyboardButton("🗑 Заметку", callback_data=f"bm:del_note:{blogger_id}"))
+        row_del = [InlineKeyboardButton("🗑 Удалить блогера", callback_data=f"bm:del_blogger_confirm:{blogger_id}")]
+        row_back = [InlineKeyboardButton("← Назад", callback_data="bm:list")]
+    else:
+        row_actions = [
+            InlineKeyboardButton("➕ Method", callback_data=f"bm:add_method_type:{blogger_id}"),
+            InlineKeyboardButton("📝 Note",   callback_data=f"bm:edit_note:{blogger_id}"),
+        ]
+        if b.get("notes"):
+            row_actions.append(InlineKeyboardButton("🗑 Note", callback_data=f"bm:del_note:{blogger_id}"))
+        row_del  = [InlineKeyboardButton("🗑 Delete blogger", callback_data=f"bm:del_blogger_confirm:{blogger_id}")]
+        row_back = [InlineKeyboardButton("← Back", callback_data="bm:list")]
+
+    buttons.append(row_actions)
+    buttons.append(row_del)
+    buttons.append(row_back)
+
+    await _edit_or_reply(target, text, edit, InlineKeyboardMarkup(buttons))
+
+
+# --------------------------------------------------------------------------- #
+# Screen: method card
+# --------------------------------------------------------------------------- #
+async def screen_method(target, method_id: int, blogger_id: int, lang: str, edit: bool = True):
+    m = await get_method_by_id(method_id)
+    if not m:
+        await _edit_or_reply(target, "Метод не найден." if lang == "ru" else "Method not found.", edit)
+        return
+
+    label = METHOD_LABELS.get(m["type"], m["type"])
+    is_primary = m.get("is_primary", 0)
+    is_active  = m.get("is_active", 1)
+    star = "★ " if is_primary else ""
+
+    if lang == "ru":
+        text = (
+            f"{star}{label}\n"
+            f"Адрес: {m['address']}\n"
+            f"Статус: {'активен' if is_active else 'отключён'}"
+            + ("\nОсновной ✓" if is_primary else "")
+        )
+        toggle_label = "🔴 Отключить" if is_active else "🟢 Включить"
+        primary_label = "✅ Основной" if is_primary else "⭐ Сделать основным"
+        buttons = [
+            [InlineKeyboardButton("✏ Изменить адрес", callback_data=f"bm:edit_address:{method_id}:{blogger_id}")],
+            [InlineKeyboardButton(primary_label, callback_data=f"bm:set_primary:{method_id}:{blogger_id}")],
+            [InlineKeyboardButton(toggle_label,  callback_data=f"bm:toggle_method:{method_id}:{blogger_id}")],
+            [InlineKeyboardButton("🗑 Удалить метод", callback_data=f"bm:del_method_confirm:{method_id}:{blogger_id}")],
+            [InlineKeyboardButton("← Назад", callback_data=f"bm:blogger:{blogger_id}")],
+        ]
+    else:
+        text = (
+            f"{star}{label}\n"
+            f"Address: {m['address']}\n"
+            f"Status: {'active' if is_active else 'disabled'}"
+            + ("\nPrimary ✓" if is_primary else "")
+        )
+        toggle_label = "🔴 Disable" if is_active else "🟢 Enable"
+        primary_label = "✅ Primary" if is_primary else "⭐ Set as primary"
+        buttons = [
+            [InlineKeyboardButton("✏ Edit address", callback_data=f"bm:edit_address:{method_id}:{blogger_id}")],
+            [InlineKeyboardButton(primary_label,    callback_data=f"bm:set_primary:{method_id}:{blogger_id}")],
+            [InlineKeyboardButton(toggle_label,     callback_data=f"bm:toggle_method:{method_id}:{blogger_id}")],
+            [InlineKeyboardButton("🗑 Delete method", callback_data=f"bm:del_method_confirm:{method_id}:{blogger_id}")],
+            [InlineKeyboardButton("← Back", callback_data=f"bm:blogger:{blogger_id}")],
+        ]
+
+    await _edit_or_reply(target, text, edit, InlineKeyboardMarkup(buttons))
+
+
+# --------------------------------------------------------------------------- #
+# Confirmation screens
+# --------------------------------------------------------------------------- #
+async def screen_confirm(target, text: str, yes_cb: str, no_cb: str, lang: str, edit: bool = True):
+    buttons = [[
+        InlineKeyboardButton("✓ Да" if lang == "ru" else "✓ Yes", callback_data=yes_cb),
+        InlineKeyboardButton("✗ Нет" if lang == "ru" else "✗ No",  callback_data=no_cb),
+    ]]
+    await _edit_or_reply(target, text, edit, InlineKeyboardMarkup(buttons))
+
+
+# --------------------------------------------------------------------------- #
+# Add method: type selection screen
+# --------------------------------------------------------------------------- #
+async def screen_add_method_type(target, blogger_id: int, lang: str, edit: bool = True):
+    b = await get_blogger_by_id(blogger_id)
+    name = b["name"] if b else "?"
+    text = (f"Добавить метод для {name}:\nВыберите тип:" if lang == "ru"
+            else f"Add method for {name}:\nSelect type:")
     buttons = [
-        [InlineKeyboardButton(b["name"], callback_data=f"{cb_prefix}:{b['id']}:{b['name']}")]
-        for b in candidates
+        [InlineKeyboardButton(METHOD_LABELS[t], callback_data=f"bm:add_method_addr:{t}:{blogger_id}")]
+        for t in METHOD_TYPES
     ]
-    await target.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+    buttons.append([InlineKeyboardButton(
+        "← Назад" if lang == "ru" else "← Back",
+        callback_data=f"bm:blogger:{blogger_id}"
+    )])
+    await _edit_or_reply(target, text, edit, InlineKeyboardMarkup(buttons))
 
 
 # --------------------------------------------------------------------------- #
-# /bloggers
+# Helper: edit or reply
+# --------------------------------------------------------------------------- #
+async def _edit_or_reply(
+    target, text: str, edit: bool,
+    keyboard: InlineKeyboardMarkup | None = None
+) -> Message | None:
+    kwargs = {"reply_markup": keyboard} if keyboard else {}
+    if edit:
+        if hasattr(target, "edit_message_text"):
+            return await target.edit_message_text(text, **kwargs)
+        elif hasattr(target, "message") and target.message:
+            return await target.message.edit_text(text, **kwargs)
+        elif hasattr(target, "edit_text"):
+            return await target.edit_text(text, **kwargs)
+    msg = getattr(target, "effective_message", None) or getattr(target, "message", None) or target
+    if hasattr(msg, "reply_text"):
+        return await msg.reply_text(text, **kwargs)
+    return None
+
+
+# --------------------------------------------------------------------------- #
+# Text input handler (addresses, notes, blogger names)
+# --------------------------------------------------------------------------- #
+_NAV_BUTTONS = {"🏠 Home", "💸 Payout", "👥 Bloggers", "⚙️ Settings",
+                   "🏠 Главная", "💸 Выплата", "👥 Блогеры", "⚙️ Настройки"}
+
+
+async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles text replies for pending bm_action states."""
+    # Don't interfere if import conversation is active
+    if context.user_data.get("ib_user") is not None:
+        return
+
+    action = context.user_data.get("bm_action")
+    if not action:
+        return  # Not our message
+
+    # Nav keyboard button pressed while waiting for input — cancel silently
+    text_raw = (update.message.text or "").strip()
+    if text_raw in _NAV_BUTTONS or text_raw.startswith("🏠") or text_raw.startswith("💸"):
+        context.user_data.pop("bm_action", None)
+        context.user_data.pop("bm_prompt_msg_id", None)
+        # Let fallback handle the nav button normally
+        return
+
+    user = await get_user(update.effective_user.id)
+    lang = get_lang(user) if user else "en"
+    text = update.message.text.strip()
+    menu_msg_id = context.user_data.get("bm_msg_id")
+
+    # Delete the prompt message (the one bot sent asking for input)
+    prompt_msg_id = context.user_data.get("bm_prompt_msg_id")
+    if prompt_msg_id:
+        try:
+            await update.message.bot.delete_message(update.effective_chat.id, prompt_msg_id)
+        except Exception:
+            pass
+
+    # Delete user's reply to keep chat clean
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
+    if action == "add_blogger_name":
+        if not text:
+            return
+        # Check for existing
+        existing = await get_blogger_by_name(text, user["id"])
+        if existing:
+            await _restore_menu(update, context, menu_msg_id,
+                f"Блогер «{text}» уже существует." if lang == "ru" else f"Blogger '{text}' already exists.",
+                lang)
+            return
+        result = await add_blogger(text, user["id"])
+        if result:
+            log_info("BLOGGER_ADDED", user_id=user["telegram_id"], username=user["username"], blogger=text)
+            await db_log(user["id"], "BLOGGER_ADDED", f"blogger={text}")
+            context.user_data["bm_blogger_id"] = result["id"]
+            context.user_data.pop("bm_action", None)
+            await _restore_screen_blogger(update, context, result["id"], lang, menu_msg_id)
+        return
+
+    blogger_id = context.user_data.get("bm_blogger_id")
+    method_id  = context.user_data.get("bm_method_id")
+
+    if action == "edit_note":
+        if blogger_id:
+            await update_blogger_notes(blogger_id, text)
+            log_info("NOTE_UPDATED", user_id=user["telegram_id"], username=user["username"])
+            context.user_data.pop("bm_action", None)
+            await _restore_screen_blogger(update, context, blogger_id, lang, menu_msg_id)
+
+    elif action == "add_address":
+        mtype = context.user_data.get("bm_pending_type")
+        if blogger_id and mtype:
+            await add_payment_method(blogger_id, mtype, text)
+            log_info("METHOD_ADDED", user_id=user["telegram_id"], username=user["username"], type=mtype)
+            await db_log(user["id"], "METHOD_ADDED", f"type={mtype}")
+            context.user_data.pop("bm_action", None)
+            context.user_data.pop("bm_pending_type", None)
+            await _restore_screen_blogger(update, context, blogger_id, lang, menu_msg_id)
+
+    elif action == "edit_address":
+        if method_id and blogger_id:
+            await update_method_address(method_id, text)
+            log_info("METHOD_UPDATED", user_id=user["telegram_id"], username=user["username"])
+            context.user_data.pop("bm_action", None)
+            await _restore_screen_method(update, context, method_id, blogger_id, lang, menu_msg_id)
+
+
+async def _restore_screen_blogger(update, context, blogger_id, lang, menu_msg_id):
+    """Re-render blogger card by editing the original menu message."""
+    try:
+        msg = await update.message.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=menu_msg_id,
+            text="...",
+        )
+        await screen_blogger(msg, blogger_id, lang, edit=True)
+    except Exception:
+        # Fallback: send new message
+        sent = await update.effective_chat.send_message("...")
+        context.user_data["bm_msg_id"] = sent.message_id
+        await screen_blogger(sent, blogger_id, lang, edit=True)
+
+
+async def _restore_screen_method(update, context, method_id, blogger_id, lang, menu_msg_id):
+    try:
+        msg = await update.message.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=menu_msg_id,
+            text="...",
+        )
+        await screen_method(msg, method_id, blogger_id, lang, edit=True)
+    except Exception:
+        sent = await update.effective_chat.send_message("...")
+        context.user_data["bm_msg_id"] = sent.message_id
+        await screen_method(sent, method_id, blogger_id, lang, edit=True)
+
+
+async def _restore_menu(update, context, menu_msg_id, text, lang):
+    try:
+        await update.message.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=menu_msg_id,
+            text=text,
+        )
+    except Exception:
+        pass
+
+
+async def _send_prompt(query, context, text: str, action: str, **extra) -> None:
+    """Send a temporary prompt message and record its id."""
+    msg = await query.message.reply_text(text)
+    context.user_data["bm_action"] = action
+    context.user_data["bm_prompt_msg_id"] = msg.message_id
+    for k, v in extra.items():
+        context.user_data[k] = v
+
+
+# --------------------------------------------------------------------------- #
+# /cancel for text input
+# --------------------------------------------------------------------------- #
+async def cmd_cancel_bm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get("bm_action"):
+        return  # Not our cancel
+    user = await get_user(update.effective_user.id)
+    lang = get_lang(user) if user else "en"
+    context.user_data.pop("bm_action", None)
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+    menu_msg_id = context.user_data.get("bm_msg_id")
+    blogger_id  = context.user_data.get("bm_blogger_id")
+    if menu_msg_id and blogger_id:
+        await _restore_screen_blogger(update, context, blogger_id, lang, menu_msg_id)
+    else:
+        await update.message.reply_text("Отменено." if lang == "ru" else "Cancelled.")
+
+
+# --------------------------------------------------------------------------- #
+# /bloggers entry point
 # --------------------------------------------------------------------------- #
 async def cmd_bloggers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await get_user_or_reject(update)
     if not user:
         return
     lang = get_lang(user)
-    bloggers = await get_bloggers_for_manager(user["id"])
+    context.user_data["bm_user_id"] = user["id"]
+    sent = await screen_list(update.message, user, lang, edit=False)
+    if sent:
+        context.user_data["bm_msg_id"] = sent.message_id
 
-    if not bloggers:
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton(
-                "➕ Добавить блогера" if lang == "ru" else "➕ Add blogger",
-                callback_data="bl_add_blogger"
+
+# --------------------------------------------------------------------------- #
+# Main callback router: bm:<action>:<args...>
+# --------------------------------------------------------------------------- #
+async def cb_bm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    user = await get_user(update.effective_user.id)
+    lang = get_lang(user) if user else "en"
+    context.user_data["bm_user_id"] = user["id"] if user else 0
+    context.user_data["bm_msg_id"]  = query.message.message_id
+
+    parts = query.data.split(":")
+    action = parts[1]
+
+    # ---- LIST ----
+    if action == "list":
+        await screen_list(query, user, lang)
+
+    # ---- BLOGGER CARD ----
+    elif action == "blogger":
+        blogger_id = int(parts[2])
+        context.user_data["bm_blogger_id"] = blogger_id
+        await screen_blogger(query, blogger_id, lang)
+
+    # ---- ADD METHOD FROM HOME (shows list) ----
+    elif action == "add_method_list":
+        bloggers_without = await get_bloggers_without_method(user["id"])
+        all_bloggers = await get_bloggers_for_manager(user["id"])
+        bloggers = bloggers_without or all_bloggers
+        if not bloggers:
+            await query.edit_message_text(
+                "Сначала добавьте блогера: /add_blogger" if lang == "ru"
+                else "Add a blogger first: /add_blogger",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("← Назад" if lang == "ru" else "← Back", callback_data="bm:list")
+                ]])
             )
-        ]])
-        await update.message.reply_text(
-            "У вас нет блогеров." if lang == "ru" else "You have no bloggers.",
-            reply_markup=keyboard,
-        )
-        return
-
-    lines = []
-    for b in bloggers:
-        methods = await get_active_methods(b["id"])
-        if methods:
-            method_strs = [
-                f"  {METHOD_LABELS.get(m['type'], m['type'])}: {m['address']}"
-                + (" ★" if m.get("is_primary") else "")
-                for m in methods
-            ]
-            lines.append(f"• {b['name']}\n" + "\n".join(method_strs))
-        else:
-            no_method = "нет методов оплаты" if lang == "ru" else "no payment methods"
-            lines.append(f"• {b['name']} — {no_method}")
-        if b.get("notes"):
-            lines[-1] += f"\n  📝 {b['notes']}"
-
-    header = f"Ваши блогеры ({len(bloggers)}):" if lang == "ru" else f"Your bloggers ({len(bloggers)}):"
-
-    # Bottom action buttons
-    if lang == "ru":
-        action_keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("➕ Блогер",   callback_data="bl_add_blogger"),
-                InlineKeyboardButton("💳 Метод",    callback_data="bl_add_method"),
-            ],
-            [
-                InlineKeyboardButton("📝 Заметка",  callback_data="bl_add_note"),
-                InlineKeyboardButton("🗑 Управление", callback_data="bl_manage"),
-            ],
-        ])
-    else:
-        action_keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("➕ Blogger",  callback_data="bl_add_blogger"),
-                InlineKeyboardButton("💳 Method",   callback_data="bl_add_method"),
-            ],
-            [
-                InlineKeyboardButton("📝 Note",     callback_data="bl_add_note"),
-                InlineKeyboardButton("🗑 Manage",   callback_data="bl_manage"),
-            ],
-        ])
-
-    await update.message.reply_text(
-        header + "\n\n" + "\n\n".join(lines),
-        reply_markup=action_keyboard,
-    )
-
-
-# Inline button shortcuts from /bloggers
-async def cb_bl_add_blogger(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user = await get_user(update.effective_user.id)
-    lang = get_lang(user) if user else "en"
-    context.user_data["user"] = user
-    await query.message.reply_text(
-        "Введите никнейм блогера:\n/cancel — отмена"
-        if lang == "ru" else
-        "Enter blogger username:\n/cancel — cancel"
-    )
-    return AB_NAME
-
-
-async def cb_bl_add_method(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    # Simulate /add_method
-    update.callback_query.data = ""
-    user = await get_user(update.effective_user.id)
-    lang = get_lang(user) if user else "en"
-    context.user_data["user"] = user
-    await _show_blogger_list_for_method(query.message, user, lang)
-    return AM_BLOGGER
-
-
-async def cb_bl_add_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user = await get_user(update.effective_user.id)
-    lang = get_lang(user) if user else "en"
-    context.user_data["user"] = user
-    bloggers = await get_bloggers_for_manager(user["id"])
-    if not bloggers:
-        await query.answer("No bloggers." if lang == "en" else "Нет блогеров.", show_alert=True)
-        return
-    buttons = [
-        [InlineKeyboardButton(b["name"], callback_data=f"an_pick:{b['id']}:{b['name']}")]
-        for b in bloggers
-    ]
-    await query.message.reply_text(
-        "Выберите блогера для заметки:" if lang == "ru" else "Select blogger for note:",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
-    return AN_BLOGGER
-
-
-async def cb_bl_manage(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show manage menu: delete blogger or delete method."""
-    query = update.callback_query
-    await query.answer()
-    user = await get_user(update.effective_user.id)
-    lang = get_lang(user) if user else "en"
-    context.user_data["user"] = user
-    bloggers = await get_bloggers_for_manager(user["id"])
-    if not bloggers:
-        await query.answer("No bloggers." if lang == "en" else "Нет блогеров.", show_alert=True)
-        return
-    buttons = [
-        [InlineKeyboardButton(b["name"], callback_data=f"mg_pick:{b['id']}:{b['name']}")]
-        for b in bloggers
-    ]
-    text = "Выберите блогера для управления:" if lang == "ru" else "Select blogger to manage:"
-    await query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
-
-
-async def cb_mg_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show manage options for a specific blogger."""
-    query = update.callback_query
-    await query.answer()
-    user = await get_user(update.effective_user.id)
-    lang = get_lang(user) if user else "en"
-
-    _, bid, bname = query.data.split(":", 2)
-    blogger_id = int(bid)
-    methods = await get_active_methods(blogger_id)
-
-    if lang == "ru":
-        buttons = [
-            [InlineKeyboardButton(f"🗑 Удалить блогера «{bname}»", callback_data=f"mg_del_b:{blogger_id}:{bname}")],
-        ]
-        for m in methods:
-            label = METHOD_LABELS.get(m["type"], m["type"])
+            return
+        header = ("Блогеры без метода:" if bloggers_without else "Все блогеры:") if lang == "ru"                  else ("Bloggers without method:" if bloggers_without else "All bloggers:")
+        buttons = [[InlineKeyboardButton(b["name"], callback_data=f"bm:add_method_type:{b['id']}")]
+                   for b in bloggers]
+        if bloggers_without and len(all_bloggers) > len(bloggers_without):
             buttons.append([InlineKeyboardButton(
-                f"🗑 Удалить метод {label}: {m['address'][:20]}...",
-                callback_data=f"mg_del_m:{m['id']}:{bname}"
+                "Показать всех" if lang == "ru" else "Show all",
+                callback_data="bm:add_method_list_all"
             )])
-        buttons.append([InlineKeyboardButton("← Назад", callback_data="bl_manage")])
-        text = f"Управление: {bname}"
-    else:
-        buttons = [
-            [InlineKeyboardButton(f"🗑 Delete blogger '{bname}'", callback_data=f"mg_del_b:{blogger_id}:{bname}")],
-        ]
-        for m in methods:
-            label = METHOD_LABELS.get(m["type"], m["type"])
-            buttons.append([InlineKeyboardButton(
-                f"🗑 Delete method {label}: {m['address'][:20]}...",
-                callback_data=f"mg_del_m:{m['id']}:{bname}"
-            )])
-        buttons.append([InlineKeyboardButton("← Back", callback_data="bl_manage")])
-        text = f"Manage: {bname}"
+        buttons.append([InlineKeyboardButton("← Назад" if lang == "ru" else "← Back", callback_data="show_start")])
+        await query.edit_message_text(header, reply_markup=InlineKeyboardMarkup(buttons))
 
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+    elif action == "add_method_list_all":
+        bloggers = await get_bloggers_for_manager(user["id"])
+        buttons = [[InlineKeyboardButton(b["name"], callback_data=f"bm:add_method_type:{b['id']}")]
+                   for b in bloggers]
+        buttons.append([InlineKeyboardButton("← Назад" if lang == "ru" else "← Back", callback_data="show_start")])
+        header = "Все блогеры:" if lang == "ru" else "All bloggers:"
+        await query.edit_message_text(header, reply_markup=InlineKeyboardMarkup(buttons))
 
-
-async def cb_mg_del_blogger_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user = await get_user(update.effective_user.id)
-    lang = get_lang(user) if user else "en"
-
-    _, bid, bname = query.data.split(":", 2)
-    context.user_data["mg_del_bid"] = int(bid)
-    context.user_data["mg_del_bname"] = bname
-
-    if lang == "ru":
-        text = f"Удалить блогера «{bname}»?\nИстория выплат сохранится, блогер исчезнет из списков."
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("Да, удалить", callback_data="mg_confirm_del_b:yes"),
-            InlineKeyboardButton("Отмена",      callback_data="mg_confirm_del_b:no"),
-        ]])
-    else:
-        text = f"Delete blogger '{bname}'?\nPayout history will be kept, blogger will disappear from lists."
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("Yes, delete", callback_data="mg_confirm_del_b:yes"),
-            InlineKeyboardButton("Cancel",      callback_data="mg_confirm_del_b:no"),
-        ]])
-    await query.edit_message_text(text, reply_markup=keyboard)
-
-
-async def cb_mg_confirm_del_blogger(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user = await get_user(update.effective_user.id)
-    lang = get_lang(user) if user else "en"
-    action = query.data.split(":")[1]
-
-    if action == "no":
-        await query.edit_message_text("Отменено." if lang == "ru" else "Cancelled.")
-        return
-
-    bid = context.user_data.get("mg_del_bid")
-    bname = context.user_data.get("mg_del_bname", "?")
-    if bid:
-        await deactivate_blogger(bid)
-        log_info("BLOGGER_DEACTIVATED", user_id=user["telegram_id"], username=user["username"], blogger=bname)
-        await db_log(user["id"], "BLOGGER_DEACTIVATED", f"blogger={bname}")
-    await query.edit_message_text(
-        f"Блогер «{bname}» удалён из списка." if lang == "ru"
-        else f"Blogger '{bname}' removed from list.",
-        reply_markup=nav_keyboard(lang),
-    )
-
-
-async def cb_mg_del_method_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user = await get_user(update.effective_user.id)
-    lang = get_lang(user) if user else "en"
-
-    _, mid, bname = query.data.split(":", 2)
-    method_id = int(mid)
-    method = await get_method_by_id(method_id)
-    context.user_data["mg_del_mid"] = method_id
-    context.user_data["mg_del_bname"] = bname
-
-    label = METHOD_LABELS.get(method["type"], method["type"]) if method else "?"
-    addr  = method["address"] if method else "?"
-
-    if lang == "ru":
-        text = f"Отключить метод {label}: {addr} у блогера «{bname}»?"
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("Да, отключить", callback_data="mg_confirm_del_m:yes"),
-            InlineKeyboardButton("Отмена",        callback_data="mg_confirm_del_m:no"),
-        ]])
-    else:
-        text = f"Disable method {label}: {addr} for '{bname}'?"
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("Yes, disable", callback_data="mg_confirm_del_m:yes"),
-            InlineKeyboardButton("Cancel",       callback_data="mg_confirm_del_m:no"),
-        ]])
-    await query.edit_message_text(text, reply_markup=keyboard)
-
-
-async def cb_mg_confirm_del_method(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user = await get_user(update.effective_user.id)
-    lang = get_lang(user) if user else "en"
-    action = query.data.split(":")[1]
-
-    if action == "no":
-        await query.edit_message_text("Отменено." if lang == "ru" else "Cancelled.")
-        return
-
-    mid = context.user_data.get("mg_del_mid")
-    bname = context.user_data.get("mg_del_bname", "?")
-    if mid:
-        await deactivate_method(mid)
-        log_info("METHOD_DEACTIVATED", user_id=user["telegram_id"], username=user["username"], blogger=bname, method_id=mid)
-        await db_log(user["id"], "METHOD_DEACTIVATED", f"blogger={bname} | method_id={mid}")
-    await query.edit_message_text(
-        f"Метод отключён." if lang == "ru" else "Method disabled.",
-        reply_markup=nav_keyboard(lang),
-    )
-
-
-# --------------------------------------------------------------------------- #
-# /add_blogger [name_or_prefix]
-# --------------------------------------------------------------------------- #
-async def cmd_add_blogger(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = await get_user_or_reject(update)
-    if not user:
-        return ConversationHandler.END
-    lang = get_lang(user)
-    context.user_data["user"] = user
-
-    # If name passed as arg — prefill
-    arg = " ".join(context.args).strip() if context.args else ""
-    if arg:
-        context.user_data["ab_name"] = arg
-        await update.message.reply_text(
-            f"Добавить блогера «{arg}»? Отправьте /skip для подтверждения без заметки,\n"
-            f"или введите заметку.\n/cancel — отмена"
-            if lang == "ru" else
-            f"Add blogger '{arg}'? Send /skip to confirm without note,\n"
-            f"or enter a note.\n/cancel — cancel"
+    # ---- ADD BLOGGER ----
+    elif action == "add_blogger_start":
+        # parts[2] = origin context: 'list' (from /bloggers) or 'home' (from main screen)
+        origin = parts[2] if len(parts) > 2 else "list"
+        context.user_data["bm_origin"] = origin
+        back_cb = "show_start" if origin == "home" else "bm:list"
+        await query.edit_message_text(
+            "Введите никнейм блогера (как в таблице):" if lang == "ru"
+            else "Enter blogger username (as in spreadsheet):",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("← Назад" if lang == "ru" else "← Back", callback_data=back_cb)
+            ]])
         )
-        return AB_NOTES
+        context.user_data["bm_action"] = "add_blogger_name"
 
-    await update.message.reply_text(
-        "Введите никнейм блогера (как в таблице):\n/cancel — отмена"
-        if lang == "ru" else
-        "Enter blogger username (as in the spreadsheet):\n/cancel — cancel"
-    )
-    return AB_NAME
+    # ---- ADD METHOD: type selection ----
+    elif action == "add_method_type":
+        blogger_id = int(parts[2])
+        context.user_data["bm_blogger_id"] = blogger_id
+        await screen_add_method_type(query, blogger_id, lang)
 
-
-async def ab_got_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = context.user_data["user"]
-    lang = get_lang(user)
-    name = update.message.text.strip()
-    if not name:
-        await update.message.reply_text("Пустое имя." if lang == "ru" else "Empty name.")
-        return AB_NAME
-    context.user_data["ab_name"] = name
-    await update.message.reply_text(
-        f"Блогер: {name}\n/skip — добавить без заметки\nИли введите заметку:"
-        if lang == "ru" else
-        f"Blogger: {name}\n/skip — add without note\nOr enter a note:"
-    )
-    return AB_NOTES
-
-
-async def ab_skip_notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    return await _save_blogger(update, context, None)
-
-
-async def ab_got_notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    notes = update.message.text.strip()
-    return await _save_blogger(update, context, notes)
-
-
-async def _save_blogger(update, context, notes):
-    user = context.user_data["user"]
-    lang = get_lang(user)
-    name = context.user_data["ab_name"]
-    result = await add_blogger(name, user["id"], notes)
-    if result is None:
-        await update.message.reply_text(
-            f"Блогер «{name}» уже есть." if lang == "ru" else f"Blogger '{name}' already exists."
+    # ---- ADD METHOD: address input ----
+    elif action == "add_method_addr":
+        mtype = parts[2]
+        blogger_id = int(parts[3])
+        context.user_data["bm_blogger_id"]   = blogger_id
+        context.user_data["bm_pending_type"] = mtype
+        hints = {
+            "site":       {"ru": "Profile ID (напр. 690779e7e54ed806f3d730b4)", "en": "Profile ID (e.g. 690779e7e54ed806f3d730b4)"},
+            "usdt-trc20": {"ru": "Адрес кошелька TRC20",                        "en": "TRC20 wallet address"},
+            "paypal":     {"ru": "Email PayPal",                                 "en": "PayPal email"},
+        }
+        hint = hints.get(mtype, {}).get(lang, "")
+        label = METHOD_LABELS.get(mtype, mtype)
+        back_row = [InlineKeyboardButton(
+            "← Назад" if lang == "ru" else "← Back",
+            callback_data=f"bm:add_method_type:{blogger_id}"
+        )]
+        await query.edit_message_text(
+            f"Тип: {label}\n{hint}\n\nВведите адрес:" if lang == "ru"
+            else f"Type: {label}\n{hint}\n\nEnter address:",
+            reply_markup=InlineKeyboardMarkup([back_row])
         )
-        context.user_data.clear()
-        return ConversationHandler.END
-    log_info("BLOGGER_ADDED", user_id=user["telegram_id"], username=user["username"], blogger=name)
-    await db_log(user["id"], "BLOGGER_ADDED", f"blogger={name}")
-    await update.message.reply_text(
-        f"Блогер «{name}» добавлен.\nДобавьте способ оплаты: /add_method"
-        if lang == "ru" else
-        f"Blogger '{name}' added.\nAdd payment method: /add_method",
-        reply_markup=nav_keyboard(lang),
-    )
-    context.user_data.clear()
-    return ConversationHandler.END
+        context.user_data["bm_action"] = "add_address"
 
+    # ---- EDIT NOTE ----
+    elif action == "edit_note":
+        blogger_id = int(parts[2])
+        context.user_data["bm_blogger_id"] = blogger_id
+        b = await get_blogger_by_id(blogger_id)
+        current = b.get("notes") or ""
+        prefix = (f"Текущая заметка: {current}\n\n" if current else "")
+        await query.edit_message_text(
+            prefix + ("Введите новую заметку:" if lang == "ru" else "Enter new note:"),
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    "← Назад" if lang == "ru" else "← Back",
+                    callback_data=f"bm:blogger:{blogger_id}"
+                )
+            ]])
+        )
+        context.user_data["bm_action"] = "edit_note"
 
-# --------------------------------------------------------------------------- #
-# /add_note [name_or_prefix]
-# --------------------------------------------------------------------------- #
-async def cmd_add_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = await get_user_or_reject(update)
-    if not user:
-        return ConversationHandler.END
-    lang = get_lang(user)
-    context.user_data["user"] = user
+    # ---- DELETE NOTE ----
+    elif action == "del_note":
+        blogger_id = int(parts[2])
+        await update_blogger_notes(blogger_id, "")
+        await screen_blogger(query, blogger_id, lang)
 
-    arg = " ".join(context.args).strip() if context.args else ""
-    if arg:
-        exact, candidates = await _resolve_blogger(arg, user["id"], lang)
-        if exact:
-            context.user_data["an_blogger_id"] = exact["id"]
-            context.user_data["an_blogger_name"] = exact["name"]
-            await update.message.reply_text(
-                f"Введите заметку для {exact['name']}:\n/cancel — отмена"
-                if lang == "ru" else
-                f"Enter note for {exact['name']}:\n/cancel — cancel"
-            )
-            return AN_TEXT
-        elif candidates:
-            await _send_prefix_choice(
-                update.message, candidates, "an_pick", lang,
-                f"Несколько совпадений для «{arg}»:" if lang == "ru" else f"Multiple matches for '{arg}':"
-            )
-            return AN_BLOGGER
+    # ---- METHOD CARD ----
+    elif action == "method":
+        method_id  = int(parts[2])
+        method = await get_method_by_id(method_id)
+        blogger_id = method["blogger_id"] if method else 0
+        context.user_data["bm_method_id"]  = method_id
+        context.user_data["bm_blogger_id"] = blogger_id
+        await screen_method(query, method_id, blogger_id, lang)
+
+    # ---- SET PRIMARY ----
+    elif action == "set_primary":
+        method_id  = int(parts[2])
+        blogger_id = int(parts[3])
+        await set_primary_method(method_id, blogger_id)
+        await db_log(user["id"] if user else None, "METHOD_SET_PRIMARY", f"method_id={method_id}")
+        await screen_method(query, method_id, blogger_id, lang)
+
+    # ---- TOGGLE METHOD ----
+    elif action == "toggle_method":
+        method_id  = int(parts[2])
+        blogger_id = int(parts[3])
+        m = await get_method_by_id(method_id)
+        if m["is_active"]:
+            await deactivate_method(method_id)
         else:
-            await update.message.reply_text(
-                f"Блогер «{arg}» не найден." if lang == "ru" else f"Blogger '{arg}' not found."
-            )
-            return ConversationHandler.END
+            await reactivate_method(method_id)
+        await db_log(user["id"] if user else None, "METHOD_TOGGLED", f"method_id={method_id}")
+        await screen_method(query, method_id, blogger_id, lang)
 
-    bloggers = await get_bloggers_for_manager(user["id"])
-    if not bloggers:
-        await update.message.reply_text("Нет блогеров." if lang == "ru" else "No bloggers.")
-        return ConversationHandler.END
-    buttons = [
-        [InlineKeyboardButton(b["name"], callback_data=f"an_pick:{b['id']}:{b['name']}")]
-        for b in bloggers
-    ]
-    await update.message.reply_text(
-        "Выберите блогера:" if lang == "ru" else "Select blogger:",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
-    return AN_BLOGGER
+    # ---- EDIT ADDRESS ----
+    elif action == "edit_address":
+        method_id  = int(parts[2])
+        blogger_id = int(parts[3])
+        context.user_data["bm_method_id"]  = method_id
+        context.user_data["bm_blogger_id"] = blogger_id
+        await query.edit_message_text(
+            "Введите новый адрес:" if lang == "ru" else "Enter new address:",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    "← Назад" if lang == "ru" else "← Back",
+                    callback_data=f"bm:method:{method_id}"
+                )
+            ]])
+        )
+        context.user_data["bm_action"] = "edit_address"
 
+    # ---- DELETE BLOGGER (confirm) ----
+    elif action == "del_blogger_confirm":
+        blogger_id = int(parts[2])
+        b = await get_blogger_by_id(blogger_id)
+        name = b["name"] if b else "?"
+        await screen_confirm(
+            query,
+            (f"Удалить блогера «{name}»?\nИстория выплат сохранится."
+             if lang == "ru" else
+             f"Delete blogger '{name}'?\nPayout history will be kept."),
+            yes_cb=f"bm:del_blogger_do:{blogger_id}",
+            no_cb=f"bm:blogger:{blogger_id}",
+            lang=lang,
+        )
 
-async def an_got_blogger(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user = context.user_data["user"]
-    lang = get_lang(user)
-    _, bid, bname = query.data.split(":", 2)
-    context.user_data["an_blogger_id"] = int(bid)
-    context.user_data["an_blogger_name"] = bname
-    await query.edit_message_text(
-        f"Введите заметку для {bname}:\n/cancel — отмена"
-        if lang == "ru" else
-        f"Enter note for {bname}:\n/cancel — cancel"
-    )
-    return AN_TEXT
+    # ---- DELETE BLOGGER (do) ----
+    elif action == "del_blogger_do":
+        blogger_id = int(parts[2])
+        b = await get_blogger_by_id(blogger_id)
+        name = b["name"] if b else "?"
+        await deactivate_blogger(blogger_id)
+        log_info("BLOGGER_DEACTIVATED", user_id=user["telegram_id"] if user else 0,
+                 username=user["username"] if user else "", blogger=name)
+        await db_log(user["id"] if user else None, "BLOGGER_DEACTIVATED", f"blogger={name}")
+        await screen_list(query, user, lang)
 
+    # ---- DELETE METHOD (confirm) ----
+    elif action == "del_method_confirm":
+        method_id  = int(parts[2])
+        blogger_id = int(parts[3])
+        m = await get_method_by_id(method_id)
+        label = METHOD_LABELS.get(m["type"], m["type"]) if m else "?"
+        await screen_confirm(
+            query,
+            (f"Отключить метод {label}?\n{m['address']}"
+             if lang == "ru" else
+             f"Disable method {label}?\n{m['address']}"),
+            yes_cb=f"bm:del_method_do:{method_id}:{blogger_id}",
+            no_cb=f"bm:method:{method_id}",
+            lang=lang,
+        )
 
-async def an_got_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = context.user_data["user"]
-    lang = get_lang(user)
-    note = update.message.text.strip()
-    bid = context.user_data["an_blogger_id"]
-    bname = context.user_data["an_blogger_name"]
-    await update_blogger_notes(bid, note)
-    log_info("NOTE_UPDATED", user_id=user["telegram_id"], username=user["username"], blogger=bname)
-    await update.message.reply_text(
-        f"Заметка для «{bname}» обновлена." if lang == "ru" else f"Note for '{bname}' updated.",
-        reply_markup=nav_keyboard(lang),
-    )
-    context.user_data.clear()
-    return ConversationHandler.END
+    # ---- DELETE METHOD (do) ----
+    elif action == "del_method_do":
+        method_id  = int(parts[2])
+        blogger_id = int(parts[3])
+        await deactivate_method(method_id)
+        await db_log(user["id"] if user else None, "METHOD_DEACTIVATED", f"method_id={method_id}")
+        await screen_blogger(query, blogger_id, lang)
 
 
 # --------------------------------------------------------------------------- #
-# /add_method [name_or_prefix]
+# /add_method shortcut (command entry)
 # --------------------------------------------------------------------------- #
 async def cmd_add_method(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await get_user_or_reject(update)
     if not user:
-        return ConversationHandler.END
+        return
     lang = get_lang(user)
-    context.user_data["user"] = user
-
     arg = " ".join(context.args).strip() if context.args else ""
+
+    bloggers_without = await get_bloggers_without_method(user["id"])
     if arg:
-        exact, candidates = await _resolve_blogger(arg, user["id"], lang)
-        if exact:
-            context.user_data["am_blogger_id"]   = exact["id"]
-            context.user_data["am_blogger_name"] = exact["name"]
-            return await _show_type_selection(update.message, context, exact["name"], lang)
-        elif candidates:
-            await _send_prefix_choice(
-                update.message, candidates, "am_blogger", lang,
-                f"Несколько совпадений для «{arg}»:" if lang == "ru" else f"Multiple matches for '{arg}':"
-            )
-            return AM_BLOGGER
-        else:
-            await update.message.reply_text(
-                f"Блогер «{arg}» не найден." if lang == "ru" else f"Blogger '{arg}' not found."
-            )
-            return ConversationHandler.END
+        from database.queries import search_bloggers_by_prefix
+        exact = await get_blogger_by_name(arg, user["id"])
+        if not exact:
+            candidates = await search_bloggers_by_prefix(arg, user["id"])
+            if len(candidates) == 1:
+                exact = candidates[0]
+            elif candidates:
+                buttons = [[InlineKeyboardButton(b["name"], callback_data=f"bm:add_method_type:{b['id']}")]
+                           for b in candidates]
+                sent = await update.message.reply_text(
+                    f"Несколько совпадений для «{arg}»:" if lang == "ru" else f"Multiple matches for '{arg}':",
+                    reply_markup=InlineKeyboardMarkup(buttons)
+                )
+                context.user_data["bm_msg_id"] = sent.message_id
+                return
+            else:
+                await update.message.reply_text(
+                    f"Блогер «{arg}» не найден." if lang == "ru" else f"Blogger '{arg}' not found."
+                )
+                return
+        context.user_data["bm_blogger_id"] = exact["id"]
+        sent = await update.message.reply_text("...")
+        context.user_data["bm_msg_id"] = sent.message_id
+        await screen_add_method_type(sent, exact["id"], lang, edit=True)
+        return
 
-    return await _show_blogger_list_for_method(update.message, user, lang)
-
-
-async def _show_blogger_list_for_method(target, user, lang):
-    bloggers = await get_bloggers_without_method(user["id"])
-    show_all = not bloggers
-    if show_all:
-        bloggers = await get_bloggers_for_manager(user["id"])
+    # Show list
+    bloggers = bloggers_without or await get_bloggers_for_manager(user["id"])
     if not bloggers:
-        await target.reply_text(
+        await update.message.reply_text(
             "Сначала добавьте блогера: /add_blogger" if lang == "ru"
             else "Add a blogger first: /add_blogger"
         )
-        return ConversationHandler.END
-    buttons = [
-        [InlineKeyboardButton(b["name"], callback_data=f"am_blogger:{b['id']}:{b['name']}")]
-        for b in bloggers
-    ]
-    if not show_all:
-        buttons.append([InlineKeyboardButton(
-            "Показать всех" if lang == "ru" else "Show all",
-            callback_data="am_blogger:showall"
-        )])
-    header = ("Блогеры без метода оплаты:" if not show_all else "Все блогеры:") if lang == "ru" \
-             else ("Bloggers without payment method:" if not show_all else "All bloggers:")
-    await target.reply_text(header, reply_markup=InlineKeyboardMarkup(buttons))
-    return AM_BLOGGER
-
-
-async def am_got_blogger(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user = context.user_data["user"]
-    lang = get_lang(user)
-
-    if query.data == "am_blogger:showall":
-        bloggers = await get_bloggers_for_manager(user["id"])
-        buttons = [
-            [InlineKeyboardButton(b["name"], callback_data=f"am_blogger:{b['id']}:{b['name']}")]
-            for b in bloggers
-        ]
-        await query.edit_message_text(
-            "Все блогеры:" if lang == "ru" else "All bloggers:",
-            reply_markup=InlineKeyboardMarkup(buttons)
-        )
-        return AM_BLOGGER
-
-    _, bid, bname = query.data.split(":", 2)
-    context.user_data["am_blogger_id"]   = int(bid)
-    context.user_data["am_blogger_name"] = bname
-    await _show_type_selection(query.message, context, bname, lang, edit=True, query=query)
-    return AM_TYPE
-
-
-async def _show_type_selection(target, context, blogger_name, lang, edit=False, query=None):
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton(METHOD_LABELS[t], callback_data=f"am_type:{t}")]
-        for t in METHOD_TYPES
-    ])
-    text = f"Блогер: {blogger_name}\nВыберите тип:" if lang == "ru" \
-           else f"Blogger: {blogger_name}\nSelect type:"
-    if edit and query:
-        await query.edit_message_text(text, reply_markup=keyboard)
-    else:
-        await target.reply_text(text, reply_markup=keyboard)
-    return AM_TYPE
-
-
-async def am_got_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user = context.user_data["user"]
-    lang = get_lang(user)
-    method_type = query.data.split(":")[1]
-    context.user_data["am_type"] = method_type
-    hints = {
-        "site":       {"ru": "Profile ID (например: 690779e7e54ed806f3d730b4)",    "en": "Profile ID (e.g. 690779e7e54ed806f3d730b4)"},
-        "usdt-trc20": {"ru": "Адрес кошелька TRC20",                               "en": "TRC20 wallet address"},
-        "paypal":     {"ru": "Email PayPal",                                        "en": "PayPal email"},
-    }
-    hint = hints.get(method_type, {}).get(lang, "")
-    label = METHOD_LABELS.get(method_type, method_type)
-    await query.edit_message_text(
-        f"Тип: {label}\n{hint}\n/cancel — отмена" if lang == "ru"
-        else f"Type: {label}\n{hint}\n/cancel — cancel"
-    )
-    return AM_ADDRESS
-
-
-async def am_got_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = context.user_data["user"]
-    lang = get_lang(user)
-    address = update.message.text.strip()
-    if not address:
-        await update.message.reply_text("Пустой адрес." if lang == "ru" else "Empty address.")
-        return AM_ADDRESS
-    context.user_data["am_address"] = address
-    return await _save_method(update, context, lang)
-
-
-async def _save_method(update, context, lang):
-    user = context.user_data["user"]
-    bid   = context.user_data["am_blogger_id"]
-    bname = context.user_data["am_blogger_name"]
-    mtype = context.user_data["am_type"]
-    addr  = context.user_data["am_address"]
-    await add_payment_method(bid, mtype, addr)
-    log_info("METHOD_ADDED", user_id=user["telegram_id"], username=user["username"], blogger=bname, type=mtype)
-    await db_log(user["id"], "METHOD_ADDED", f"blogger={bname} | type={mtype}")
-    type_label = METHOD_LABELS.get(mtype, mtype)
-    await update.message.reply_text(
-        f"Способ оплаты добавлен:\n{bname} — {type_label}: {addr}"
-        if lang == "ru" else
-        f"Payment method added:\n{bname} — {type_label}: {addr}",
-        reply_markup=nav_keyboard(lang),
-    )
-    context.user_data.clear()
-    return ConversationHandler.END
+        return
+    header = ("Блогеры без метода:" if bloggers_without else "Все блогеры:") if lang == "ru" \
+             else ("Bloggers without method:" if bloggers_without else "All bloggers:")
+    buttons = [[InlineKeyboardButton(b["name"], callback_data=f"bm:add_method_type:{b['id']}")]
+               for b in bloggers]
+    if bloggers_without:
+        all_list = await get_bloggers_for_manager(user["id"])
+        if len(all_list) > len(bloggers_without):
+            buttons.append([InlineKeyboardButton(
+                "Показать всех" if lang == "ru" else "Show all",
+                callback_data="bm:list"
+            )])
+    sent = await update.message.reply_text(header, reply_markup=InlineKeyboardMarkup(buttons))
+    context.user_data["bm_msg_id"] = sent.message_id
 
 
 # --------------------------------------------------------------------------- #
-# /edit_method
+# /add_blogger shortcut
 # --------------------------------------------------------------------------- #
-async def cmd_edit_method(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_add_blogger(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await get_user_or_reject(update)
     if not user:
-        return ConversationHandler.END
+        return
     lang = get_lang(user)
-    context.user_data["user"] = user
-    bloggers = await get_bloggers_for_manager(user["id"])
-    if not bloggers:
-        await update.message.reply_text("Нет блогеров." if lang == "ru" else "No bloggers.")
-        return ConversationHandler.END
-    buttons = [
-        [InlineKeyboardButton(b["name"], callback_data=f"em_blogger:{b['id']}:{b['name']}")]
-        for b in bloggers
-    ]
-    await update.message.reply_text(
-        "Выберите блогера:" if lang == "ru" else "Select blogger:",
-        reply_markup=InlineKeyboardMarkup(buttons)
+    context.user_data["bm_origin"] = "list"  # command entry always backs to list
+    sent = await update.message.reply_text(
+        "Введите никнейм блогера:\n/cancel — отмена"
+        if lang == "ru" else
+        "Enter blogger username:\n/cancel — cancel",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("← Назад" if lang == "ru" else "← Back", callback_data="bm:list")
+        ]])
     )
-    return EM_BLOGGER
-
-
-async def em_got_blogger(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user = context.user_data["user"]
-    lang = get_lang(user)
-    _, bid, bname = query.data.split(":", 2)
-    methods = await get_all_methods(int(bid))
-    if not methods:
-        await query.edit_message_text("Нет методов." if lang == "ru" else "No methods.")
-        return ConversationHandler.END
-    buttons = []
-    for m in methods:
-        status = "" if m["is_active"] else (" [откл]" if lang == "ru" else " [off]")
-        primary = " ★" if m.get("is_primary") else ""
-        label = METHOD_LABELS.get(m["type"], m["type"])
-        buttons.append([InlineKeyboardButton(
-            f"{label}: {m['address']}{primary}{status}",
-            callback_data=f"em_method:{m['id']}"
-        )])
-    await query.edit_message_text(
-        f"Методы {bname}:" if lang == "ru" else f"Methods for {bname}:",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
-    return EM_METHOD
-
-
-async def em_got_method(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user = context.user_data["user"]
-    lang = get_lang(user)
-    method_id = int(query.data.split(":")[1])
-    context.user_data["em_method_id"] = method_id
-    method = await get_method_by_id(method_id)
-    label = METHOD_LABELS.get(method["type"], method["type"])
-    is_primary = method.get("is_primary", 0)
-    toggle = ("🔴 Отключить" if method["is_active"] else "🟢 Включить") if lang == "ru" \
-             else ("🔴 Disable" if method["is_active"] else "🟢 Enable")
-    primary_btn = ("✅ Основной" if is_primary else "⭐ Сделать основным") if lang == "ru" \
-                  else ("✅ Primary" if is_primary else "⭐ Set as primary")
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✏ Изменить адрес" if lang == "ru" else "✏ Edit address", callback_data="em_action:edit")],
-        [InlineKeyboardButton(primary_btn, callback_data="em_action:primary")],
-        [InlineKeyboardButton(toggle, callback_data="em_action:toggle")],
-        [InlineKeyboardButton("← Назад" if lang == "ru" else "← Back", callback_data="em_action:back")],
-    ])
-    status = ("активен" if method["is_active"] else "отключён") if lang == "ru" \
-             else ("active" if method["is_active"] else "disabled")
-    await query.edit_message_text(
-        f"{label}: {method['address']}\nСтатус: {status}" if lang == "ru"
-        else f"{label}: {method['address']}\nStatus: {status}",
-        reply_markup=keyboard
-    )
-    return EM_ACTION
-
-
-async def em_got_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user = context.user_data["user"]
-    lang = get_lang(user)
-    action = query.data.split(":")[1]
-    method_id = context.user_data["em_method_id"]
-    method = await get_method_by_id(method_id)
-
-    if action == "toggle":
-        if method["is_active"]:
-            await deactivate_method(method_id)
-            msg = "Метод отключён." if lang == "ru" else "Method disabled."
-        else:
-            await reactivate_method(method_id)
-            msg = "Метод включён." if lang == "ru" else "Method enabled."
-        await db_log(user["id"], "METHOD_TOGGLED", f"method_id={method_id}")
-        await query.edit_message_text(msg, reply_markup=nav_keyboard(lang))
-        return ConversationHandler.END
-
-    elif action == "primary":
-        await set_primary_method(method_id, method["blogger_id"])
-        await db_log(user["id"], "METHOD_SET_PRIMARY", f"method_id={method_id}")
-        await query.edit_message_text(
-            "Метод установлен как основной." if lang == "ru" else "Method set as primary.",
-            reply_markup=nav_keyboard(lang),
-        )
-        return ConversationHandler.END
-
-    elif action == "edit":
-        await query.edit_message_text(
-            "Введите новый адрес:\n/cancel — отмена" if lang == "ru"
-            else "Enter new address:\n/cancel — cancel"
-        )
-        return EM_NEW_ADDRESS
-
-    elif action == "back":
-        await query.edit_message_text("Отменено." if lang == "ru" else "Cancelled.")
-        return ConversationHandler.END
-
-
-async def em_got_new_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = context.user_data["user"]
-    lang = get_lang(user)
-    method_id = context.user_data["em_method_id"]
-    new_address = update.message.text.strip()
-    if not new_address:
-        await update.message.reply_text("Пустой адрес." if lang == "ru" else "Empty address.")
-        return EM_NEW_ADDRESS
-    await update_method_address(method_id, new_address)
-    await db_log(user["id"], "METHOD_UPDATED", f"method_id={method_id}")
-    await update.message.reply_text(
-        "Адрес обновлён." if lang == "ru" else "Address updated.",
-        reply_markup=nav_keyboard(lang),
-    )
-    context.user_data.clear()
-    return ConversationHandler.END
-
-
-# --------------------------------------------------------------------------- #
-# /cancel
-# --------------------------------------------------------------------------- #
-async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = await get_user(update.effective_user.id)
-    lang = get_lang(user) if user else "en"
-    context.user_data.clear()
-    await update.message.reply_text(CANCEL_TEXT[lang])
-    return ConversationHandler.END
+    context.user_data["bm_msg_id"] = sent.message_id
+    context.user_data["bm_action"] = "add_blogger_name"
+    context.user_data["bm_user_id"] = user["id"]
 
 
 # --------------------------------------------------------------------------- #
 # Registration
 # --------------------------------------------------------------------------- #
 def register_blogger_handlers(app):
-    cancel_handler = CommandHandler("cancel", cmd_cancel)
+    app.add_handler(CommandHandler("bloggers",    cmd_bloggers))
+    app.add_handler(CommandHandler("add_blogger", cmd_add_blogger))
+    app.add_handler(CommandHandler("add_method",  cmd_add_method))
+    app.add_handler(CommandHandler("cancel",      cmd_cancel_bm))
 
-    # /add_blogger
-    app.add_handler(ConversationHandler(
-        entry_points=[
-            CommandHandler("add_blogger", cmd_add_blogger),
-            CallbackQueryHandler(cb_bl_add_blogger, pattern=r"^bl_add_blogger$"),
-        ],
-        states={
-            AB_NAME:  [MessageHandler(filters.TEXT & ~filters.COMMAND, ab_got_name)],
-            AB_NOTES: [
-                CommandHandler("skip", ab_skip_notes),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, ab_got_notes),
-            ],
-        },
-        fallbacks=[cancel_handler],
-        conversation_timeout=300,
-    ))
+    # Main inline router
+    app.add_handler(CallbackQueryHandler(cb_bm, pattern=r"^bm:"))
 
-    # /add_method
-    app.add_handler(ConversationHandler(
-        entry_points=[
-            CommandHandler("add_method", cmd_add_method),
-            CallbackQueryHandler(cb_bl_add_method, pattern=r"^bl_add_method$"),
-        ],
-        states={
-            AM_BLOGGER:  [CallbackQueryHandler(am_got_blogger, pattern=r"^am_blogger:")],
-            AM_TYPE:     [CallbackQueryHandler(am_got_type,    pattern=r"^am_type:")],
-            AM_ADDRESS:  [MessageHandler(filters.TEXT & ~filters.COMMAND, am_got_address)],
-        },
-        fallbacks=[cancel_handler],
-        conversation_timeout=300,
-        per_message=False,
-    ))
-
-    # /add_note
-    app.add_handler(ConversationHandler(
-        entry_points=[
-            CommandHandler("add_note", cmd_add_note),
-            CallbackQueryHandler(cb_bl_add_note, pattern=r"^bl_add_note$"),
-        ],
-        states={
-            AN_BLOGGER: [CallbackQueryHandler(an_got_blogger, pattern=r"^an_pick:")],
-            AN_TEXT:    [MessageHandler(filters.TEXT & ~filters.COMMAND, an_got_text)],
-        },
-        fallbacks=[cancel_handler],
-        conversation_timeout=300,
-        per_message=False,
-    ))
-
-    # /edit_method
-    app.add_handler(ConversationHandler(
-        entry_points=[CommandHandler("edit_method", cmd_edit_method)],
-        states={
-            EM_BLOGGER:     [CallbackQueryHandler(em_got_blogger, pattern=r"^em_blogger:")],
-            EM_METHOD:      [CallbackQueryHandler(em_got_method,  pattern=r"^em_method:")],
-            EM_ACTION:      [CallbackQueryHandler(em_got_action,  pattern=r"^em_action:")],
-            EM_NEW_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, em_got_new_address)],
-        },
-        fallbacks=[cancel_handler],
-        conversation_timeout=300,
-        per_message=False,
-    ))
-
-    # Manage callbacks (outside conversations)
-    app.add_handler(CommandHandler("bloggers", cmd_bloggers))
-    app.add_handler(CommandHandler("add_note", cmd_add_note))
-    app.add_handler(CallbackQueryHandler(cb_bl_manage,                pattern=r"^bl_manage$"))
-    app.add_handler(CallbackQueryHandler(cb_mg_pick,                  pattern=r"^mg_pick:"))
-    app.add_handler(CallbackQueryHandler(cb_mg_del_blogger_confirm,   pattern=r"^mg_del_b:"))
-    app.add_handler(CallbackQueryHandler(cb_mg_confirm_del_blogger,   pattern=r"^mg_confirm_del_b:"))
-    app.add_handler(CallbackQueryHandler(cb_mg_del_method_confirm,    pattern=r"^mg_del_m:"))
-    app.add_handler(CallbackQueryHandler(cb_mg_confirm_del_method,    pattern=r"^mg_confirm_del_m:"))
+    # Text input handler — runs in group 1 (after ConversationHandlers)
+    app.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
+        group=2,
+    )

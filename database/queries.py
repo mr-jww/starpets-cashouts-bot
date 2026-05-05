@@ -56,7 +56,10 @@ async def get_all_users() -> list[dict]:
 # =========================================================================== #
 
 async def add_blogger(name: str, manager_id: int, notes: str | None = None) -> dict | None:
-    """Returns None if duplicate."""
+    """
+    Returns the blogger dict, or None if a non-deleted duplicate exists.
+    If a soft-deleted blogger with the same name exists, reactivates it.
+    """
     async with get_db() as db:
         try:
             await db.execute(
@@ -65,7 +68,20 @@ async def add_blogger(name: str, manager_id: int, notes: str | None = None) -> d
             )
             await db.commit()
         except aiosqlite.IntegrityError:
-            return None
+            # Check if it's soft-deleted — reactivate if so
+            async with db.execute(
+                "SELECT * FROM bloggers WHERE name = ? AND manager_id = ?",
+                (name, manager_id),
+            ) as cur:
+                row = await cur.fetchone()
+            if row and dict(row).get("is_active") == 0:
+                await db.execute(
+                    "UPDATE bloggers SET is_active = 1, notes = COALESCE(?, notes) WHERE name = ? AND manager_id = ?",
+                    (notes, name, manager_id),
+                )
+                await db.commit()
+            else:
+                return None  # Active duplicate — genuine conflict
         async with db.execute(
             "SELECT * FROM bloggers WHERE name = ? AND manager_id = ? AND is_active = 1",
             (name, manager_id),
@@ -180,17 +196,6 @@ async def search_bloggers_global(query: str) -> list[dict]:
             return [dict(r) for r in await cur.fetchall()]
 
 
-async def update_blogger_notes(blogger_id: int, notes: str) -> None:
-    async with get_db() as db:
-        await db.execute(
-            "UPDATE bloggers SET notes = ? WHERE id = ?", (notes, blogger_id)
-        )
-        await db.commit()
-
-
-# =========================================================================== #
-# PAYMENT METHODS
-# =========================================================================== #
 
 METHOD_TYPES = ["site", "usdt-trc20", "paypal"]
 
@@ -207,17 +212,43 @@ async def add_payment_method(
     address: str,
     label: str | None = None,
 ) -> dict:
+    """
+    Upsert: if a method of this type already exists for the blogger,
+    update its address and reactivate it. Otherwise insert new.
+    """
     async with get_db() as db:
-        await db.execute(
-            "INSERT INTO payment_methods (blogger_id, type, address, label) VALUES (?, ?, ?, ?)",
-            (blogger_id, method_type, address, label),
-        )
-        await db.commit()
+        # Check for existing method of same type (active or inactive)
         async with db.execute(
-            "SELECT * FROM payment_methods WHERE blogger_id = ? ORDER BY id DESC LIMIT 1",
-            (blogger_id,),
+            "SELECT * FROM payment_methods WHERE blogger_id = ? AND type = ? ORDER BY id LIMIT 1",
+            (blogger_id, method_type),
         ) as cur:
-            return dict(await cur.fetchone())
+            existing = await cur.fetchone()
+
+        if existing:
+            existing = dict(existing)
+            if existing["address"] != address or not existing["is_active"]:
+                await db.execute(
+                    "UPDATE payment_methods SET address = ?, is_active = 1 WHERE id = ?",
+                    (address, existing["id"]),
+                )
+                await db.commit()
+            # Return current state
+            async with db.execute(
+                "SELECT * FROM payment_methods WHERE id = ?",
+                (existing["id"],),
+            ) as cur:
+                return dict(await cur.fetchone())
+        else:
+            await db.execute(
+                "INSERT INTO payment_methods (blogger_id, type, address, label) VALUES (?, ?, ?, ?)",
+                (blogger_id, method_type, address, label),
+            )
+            await db.commit()
+            async with db.execute(
+                "SELECT * FROM payment_methods WHERE blogger_id = ? AND type = ? ORDER BY id DESC LIMIT 1",
+                (blogger_id, method_type),
+            ) as cur:
+                return dict(await cur.fetchone())
 
 
 async def get_active_methods(blogger_id: int) -> list[dict]:
@@ -271,6 +302,19 @@ async def set_primary_method(method_id: int, blogger_id: int) -> None:
         await db.commit()
 
 
+
+
+
+async def set_filter_setting(telegram_id: int, field: str, value: int) -> None:
+    """field: include_paid | warn_paid | include_pending | warn_pending"""
+    if field not in ("include_paid", "warn_paid", "include_pending", "warn_pending"):
+        return
+    async with get_db() as db:
+        await db.execute(
+            f"UPDATE users SET {field} = ? WHERE telegram_id = ?",
+            (value, telegram_id),
+        )
+        await db.commit()
 
 
 async def set_default_fmt(telegram_id: int, fmt: str) -> None:
