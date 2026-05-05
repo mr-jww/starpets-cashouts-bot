@@ -3,7 +3,7 @@
 
 Flags:
   /payout             - use manager_filter from settings
-  /payout amb-John    - filter by John
+  /payout amb-Name    - filter by John
   /payout amb-all     - no filter
 
 Buttons under each payout block:
@@ -116,11 +116,17 @@ import re
 def _nav_keyboard(lang: str) -> InlineKeyboardMarkup:
     if lang == "ru":
         return InlineKeyboardMarkup([
-            [InlineKeyboardButton("🏠 Главная", callback_data="nav_home")],
+            [
+                InlineKeyboardButton("🏠 Главная",        callback_data="nav_home"),
+                InlineKeyboardButton("💸 Новая выплата",  callback_data="start_payout"),
+            ],
             [InlineKeyboardButton("📤 Вывести все выплаты", callback_data="nav_copy_all")],
         ])
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🏠 Home", callback_data="nav_home")],
+        [
+            InlineKeyboardButton("🏠 Home",        callback_data="nav_home"),
+            InlineKeyboardButton("💸 New payout",  callback_data="start_payout"),
+        ],
         [InlineKeyboardButton("📤 Export all payouts", callback_data="nav_copy_all")],
     ])
 
@@ -217,6 +223,83 @@ async def payout_got_rows(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return ConversationHandler.END
         result.bloggers = filtered
+
+
+    # Apply payment status filter
+    # Settings: include_paid, warn_paid, include_pending, warn_pending
+    include_paid    = bool(user.get("include_paid",    0))
+    warn_paid       = bool(user.get("warn_paid",       1))
+    include_pending = bool(user.get("include_pending", 0))
+    warn_pending    = bool(user.get("warn_pending",    1))
+
+    paid_rows:    list[str] = []   # rows that are PAID
+    pending_rows: list[str] = []   # rows that are PENDING
+
+    for b in result.bloggers:
+        kept = []
+        for row in b.rows:
+            status = (row.pay_status or "").upper()
+            if status == "PAID":
+                paid_rows.append(f"{b.blogger} ({row.platform}, {row.date})")
+                if include_paid:
+                    kept.append(row)
+                # if not include_paid: row is dropped
+            elif status == "PENDING":
+                pending_rows.append(f"{b.blogger} ({row.platform}, {row.date})")
+                if include_pending:
+                    kept.append(row)
+            else:
+                kept.append(row)
+        b.rows = kept
+
+    result.bloggers = [b for b in result.bloggers if b.rows]
+
+    # Build warning messages
+    warn_lines = []
+
+    def _fmt_rows(rows: list[str]) -> list[str]:
+        out = [f"  - {s}" for s in rows[:10]]
+        if len(rows) > 10:
+            out.append(f"  ... +{len(rows) - 10}" if lang == "ru" else f"  ... +{len(rows) - 10} more")
+        return out
+
+    if lang == "ru":
+        if paid_rows and warn_paid:
+            action = "добавлены в выплату" if include_paid else "пропущены"
+            warn_lines.append(f"Строки со статусом PAID ({len(paid_rows)}) – {action}:")
+            warn_lines.extend(_fmt_rows(paid_rows))
+            if not include_paid:
+                warn_lines.append("  Включить: Настройки → PAID → Включать")
+        if pending_rows and warn_pending:
+            action = "добавлены в выплату" if include_pending else "пропущены"
+            warn_lines.append(f"Строки со статусом PENDING ({len(pending_rows)}) – {action}:")
+            warn_lines.extend(_fmt_rows(pending_rows))
+            if not include_pending:
+                warn_lines.append("  Включить: Настройки → PENDING → Включать")
+    else:
+        if paid_rows and warn_paid:
+            action = "included in payout" if include_paid else "skipped"
+            warn_lines.append(f"PAID rows ({len(paid_rows)}) – {action}:")
+            warn_lines.extend(_fmt_rows(paid_rows))
+            if not include_paid:
+                warn_lines.append("  To include: Settings → PAID → Include")
+        if pending_rows and warn_pending:
+            action = "included in payout" if include_pending else "skipped"
+            warn_lines.append(f"PENDING rows ({len(pending_rows)}) – {action}:")
+            warn_lines.extend(_fmt_rows(pending_rows))
+            if not include_pending:
+                warn_lines.append("  To include: Settings → PENDING → Include")
+
+    if warn_lines:
+        await update.message.reply_text("\n".join(warn_lines))
+
+    if not result.bloggers:
+        await update.message.reply_text(
+            "Нет строк со статусом UNPAID. Все строки пропущены по настройкам фильтра."
+            if lang == "ru" else
+            "No UNPAID rows found. All rows were filtered out by status settings."
+        )
+        return ConversationHandler.END
 
     if result.critical_errors:
         await update.message.reply_text(
@@ -597,9 +680,10 @@ async def cb_payout_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await get_user(update.effective_user.id)
     lang = get_lang(user) if user else "en"
     context.user_data.clear()
-    await query.edit_message_text(
-        "Отменено." if lang == "ru" else "Cancelled."
-    )
+    try:
+        await query.message.delete()
+    except Exception:
+        await query.edit_message_text("Отменено." if lang == "ru" else "Cancelled.")
     return ConversationHandler.END
 
 
@@ -683,6 +767,7 @@ def register_payout_handlers(app):
         entry_points=[
             CommandHandler("payout", cmd_payout),
             MessageHandler(filters.Regex(r"^💸"), cmd_payout),
+            CallbackQueryHandler(cmd_payout, pattern=r"^start_payout$"),
         ],
         states={
             WAIT_ROWS: [
@@ -707,6 +792,7 @@ def register_payout_handlers(app):
     app.add_handler(CallbackQueryHandler(cb_change_method,   pattern=r"^pt_chm:"))
     app.add_handler(CallbackQueryHandler(cb_select_method,   pattern=r"^pt_sel:"))
     app.add_handler(CallbackQueryHandler(cb_quick_method_type, pattern=r"^qmt:"))
+    app.add_handler(CallbackQueryHandler(cb_payout_cancel,        pattern=r"^payout_cancel$"))
     app.add_handler(CallbackQueryHandler(cb_nav_home,             pattern=r"^nav_home$"))
     app.add_handler(CallbackQueryHandler(cb_nav_payout,           pattern=r"^nav_payout$"))
     app.add_handler(CallbackQueryHandler(cb_nav_copy_all,         pattern=r"^nav_copy_all$"))

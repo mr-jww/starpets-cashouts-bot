@@ -94,6 +94,7 @@ class VideoRow:
     price:         str
     currency:      str
     pay_method:    str
+    pay_status:    str
     game:          str
     mode:          str
     manager:       str = ""
@@ -208,16 +209,17 @@ def _parse_splite_row(parts: list[str], lang: str) -> VideoRow:
     price_r  = parts[8].strip()
     price    = price_r or err
     currency = _detect_currency(price_r) if price_r else "$"
-    method   = _normalise_method(parts[9].strip())
-    game     = parts[11].strip() or err
-    views    = _parse_views(views_s) if views_s else None
-    vdisp    = _format_views(views) if views is not None else err
-    manager  = parts[12].strip() if len(parts) > 12 else ""
-    ef, ed   = _build_errors(date, vdisp, price, platform, game, method, err, lang)
+    method     = _normalise_method(parts[9].strip())
+    pay_status = parts[10].strip().upper() if len(parts) > 10 else ""
+    game       = parts[11].strip() or err
+    views      = _parse_views(views_s) if views_s else None
+    vdisp      = _format_views(views) if views is not None else err
+    manager    = parts[12].strip() if len(parts) > 12 else ""
+    ef, ed     = _build_errors(date, vdisp, price, platform, game, method, err, lang)
     return VideoRow(
         blogger=blogger, platform=platform, link=link, date=date,
         views_raw=vdisp, views=views, price=price, currency=currency,
-        pay_method=method, game=game, mode="splite", manager=manager,
+        pay_method=method, pay_status=pay_status, game=game, mode="splite", manager=manager,
         has_error=bool(ef), error_fields=ef, error_details=ed,
     )
 
@@ -232,16 +234,17 @@ def _parse_ammm2_row(parts: list[str], lang: str) -> VideoRow:
     price_r  = parts[8].strip()
     price    = price_r or err
     currency = _detect_currency(price_r) if price_r else "$"
-    method   = _normalise_method(parts[9].strip())
-    game     = parts[12].strip() or err
-    views    = _parse_views(views_s) if views_s else None
-    vdisp    = _format_views(views) if views is not None else err
-    manager  = parts[14].strip() if len(parts) > 14 else ""
-    ef, ed   = _build_errors(date, vdisp, price, platform, game, method, err, lang)
+    method     = _normalise_method(parts[9].strip())
+    pay_status = parts[10].strip().upper() if len(parts) > 10 else ""
+    game       = parts[12].strip() or err
+    views      = _parse_views(views_s) if views_s else None
+    vdisp      = _format_views(views) if views is not None else err
+    manager    = parts[14].strip() if len(parts) > 14 else ""
+    ef, ed     = _build_errors(date, vdisp, price, platform, game, method, err, lang)
     return VideoRow(
         blogger=blogger, platform=platform, link=link, date=date,
         views_raw=vdisp, views=views, price=price, currency=currency,
-        pay_method=method, game=game, mode="ammm2", manager=manager,
+        pay_method=method, pay_status=pay_status, game=game, mode="ammm2", manager=manager,
         has_error=bool(ef), error_fields=ef, error_details=ed,
     )
 

@@ -1,40 +1,39 @@
 """
-/import-bloggers — bulk import bloggers with payment methods.
+/import_bloggers — bulk import of bloggers with payment methods.
 
-Accepted input: text message or .txt/.tsv file.
+Input: text message or .txt/.tsv file (up to 512 KB).
 
-Format (tab-separated, one blogger per line):
-  name  \t  Site_ID  \t  USDT-TRC20  \t  PayPal_email  \t  primary_method
+Row format (tab-separated):
+  name | Site_ID | USDT-TRC20 | PayPal_email | primary_method
 
-Columns 2-4 may be empty (use empty string or just omit with tab).
-At least one of columns 2-4 must be non-empty.
-Column 5 (primary) must match a non-empty column: site, usdt-trc20, paypal.
+Rules:
+- At least one of columns 2-4 must be non-empty
+- Primary (col 5) must match a non-empty column: site, usdt-trc20, paypal
+- If >40% of known bloggers would have their primary method changed, ask for confirmation
 
-Examples:
-  braba7x.ff1\t690779e7e54ed806f3d730b4\t\t\tsite
-  taypk7\t\tTLBwE3pdG9UYedsZHUENewCYLdy7KKhGi3\t\tusdt-trc20
-  blogger3\t\t\tuser@gmail.com\tpaypal
-  blogger4\t690779...\tTLBwE3...\t\tsite
+Safety: all changes are collected first, then applied atomically only after confirmation.
 """
 
 from __future__ import annotations
+import re
 import io
 from dataclasses import dataclass, field
-from telegram import Update, Document
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ContextTypes, CommandHandler, MessageHandler,
-    ConversationHandler, filters,
+    CallbackQueryHandler, ConversationHandler, filters,
 )
 
 from database.queries import (
     get_user, get_blogger_by_name, add_blogger,
     add_payment_method, set_primary_method, get_active_methods,
-    db_log,
+    get_primary_method, db_log,
 )
 from services.logger import log_info
 from handlers.common import get_user_or_reject, get_lang, nav_keyboard
 
 WAIT_DATA = 0
+WAIT_CONFIRM = 1  # handled globally, not inside ConversationHandler
 
 _PRIMARY_ALIASES = {
     "site":       "site",
@@ -56,276 +55,520 @@ _METHOD_LABELS = {
 # --------------------------------------------------------------------------- #
 @dataclass
 class ImportRow:
-    name:       str
-    site:       str = ""
-    usdt:       str = ""
-    paypal:     str = ""
-    primary:    str = ""
+    name:    str
+    site:    str = ""
+    usdt:    str = ""
+    paypal:  str = ""
+    primary: str = ""
 
 
 @dataclass
-class ImportResult:
-    added:    list[str] = field(default_factory=list)
-    updated:  list[str] = field(default_factory=list)
-    skipped:  list[tuple[str, str]] = field(default_factory=list)  # (name, reason)
-    errors:   list[tuple[str, str]] = field(default_factory=list)  # (line/name, reason)
+class ParsedRow:
+    row:    ImportRow
+    error:  str = ""  # non-empty = skip this row
+
+
+@dataclass
+class PlannedChange:
+    """What will happen to one blogger."""
+    name:            str
+    is_new:          bool
+    methods:         list[tuple[str, str]]        # [(type, address), ...]
+    method_statuses: list[str] = None             # "added"|"changed"|"same" per method
+    primary:         str = ""
+    old_primary:     str = ""
+    primary_changed: bool = False
+
+    def __post_init__(self):
+        if self.method_statuses is None:
+            self.method_statuses = ["added"] * len(self.methods)
 
 
 # --------------------------------------------------------------------------- #
 # Parser
 # --------------------------------------------------------------------------- #
-def parse_import_text(text: str, lang: str) -> tuple[list[ImportRow], list[tuple[str, str]]]:
-    """
-    Returns (valid_rows, parse_errors).
-    parse_errors: list of (line_identifier, reason).
-    """
-    rows: list[ImportRow] = []
-    errors: list[tuple[str, str]] = []
+# Smart field detection patterns
+_SITE_RE   = re.compile(r'^[0-9a-f]{24}$', re.IGNORECASE)
+_USDT_RE   = re.compile(r'^T[1-9A-HJ-NP-Za-km-z]{33}$')
+_PAYPAL_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
 
-    for line_no, line in enumerate(text.splitlines(), start=1):
+
+def _parse_smart_row(line: str) -> tuple[str, str, str, str, str] | None:
+    """
+    Parse a single row by content type, not position.
+    Returns (name, site, usdt, paypal, primary) or None if unparseable.
+
+    Detection rules:
+    - Last token = primary method keyword (site/usdt-trc20/paypal) if recognised
+    - Site ID: 24 hex chars
+    - USDT-TRC20: starts with T, 34 base58 chars
+    - PayPal: contains @ with domain
+    - Name: everything else joined with space
+    """
+    tokens = re.split(r'\s+', line.strip())
+    tokens = [t for t in tokens if t]
+    if not tokens:
+        return None
+
+    primary = ""
+    if tokens and tokens[-1].lower() in _PRIMARY_ALIASES:
+        primary = _PRIMARY_ALIASES[tokens[-1].lower()]
+        tokens = tokens[:-1]
+
+    site = usdt = paypal = ""
+    name_parts = []
+
+    for token in tokens:
+        if _SITE_RE.match(token):
+            site = token
+        elif _USDT_RE.match(token):
+            usdt = token
+        elif _PAYPAL_RE.match(token):
+            paypal = token
+        else:
+            name_parts.append(token)
+
+    name = " ".join(name_parts)
+    return name, site, usdt, paypal, primary
+
+
+def parse_import_text(text: str, lang: str) -> tuple[list[ParsedRow], list[ParsedRow]]:
+    """Returns (valid, invalid). Uses smart field detection by content type."""
+    valid:   list[ParsedRow] = []
+    invalid: list[ParsedRow] = []
+
+    for line_no, line in enumerate(text.splitlines(), 1):
         line = line.strip()
         if not line:
             continue
 
-        parts = line.split("\t")
-        parts = [p.strip() for p in parts]
+        parsed = _parse_smart_row(line)
+        if parsed is None:
+            tag = f"Строка {line_no}" if lang == "ru" else f"Line {line_no}"
+            invalid.append(ParsedRow(ImportRow(tag), "пустая строка" if lang == "ru" else "empty line"))
+            continue
 
-        # Pad to 5 columns
-        while len(parts) < 5:
-            parts.append("")
+        name, site, usdt, paypal, primary = parsed
 
-        name    = parts[0]
-        site    = parts[1]
-        usdt    = parts[2]
-        paypal  = parts[3]
-        primary_raw = parts[4].lower().strip()
-
-        # Validate name
         if not name:
-            errors.append((
-                f"Строка {line_no}" if lang == "ru" else f"Line {line_no}",
-                "отсутствует имя блогера" if lang == "ru" else "blogger name missing"
-            ))
+            tag = f"Строка {line_no}" if lang == "ru" else f"Line {line_no}"
+            invalid.append(ParsedRow(ImportRow(tag), "имя не определено" if lang == "ru" else "name not found"))
             continue
 
-        # At least one method must be present
         if not site and not usdt and not paypal:
-            errors.append((
-                name,
-                "не указан ни один метод оплаты" if lang == "ru"
-                else "no payment method provided"
-            ))
+            invalid.append(ParsedRow(ImportRow(name), "нет ни одного метода оплаты" if lang == "ru" else "no payment method"))
             continue
 
-        # Validate primary
-        primary = _PRIMARY_ALIASES.get(primary_raw, "")
+        # If no primary specified, auto-assign to the only method
         if not primary:
-            errors.append((
-                name,
-                f"неверный основной метод: «{primary_raw}»" if lang == "ru"
-                else f"invalid primary method: '{primary_raw}'"
-            ))
-            continue
+            found = [(t, a) for t, a in [("site", site), ("usdt-trc20", usdt), ("paypal", paypal)] if a]
+            if len(found) == 1:
+                primary = found[0][0]
+            else:
+                invalid.append(ParsedRow(ImportRow(name),
+                    "не указан основной метод (их несколько)" if lang == "ru"
+                    else "primary method not specified (multiple methods found)"))
+                continue
 
-        # Primary must match a non-empty field
         method_map = {"site": site, "usdt-trc20": usdt, "paypal": paypal}
         if not method_map.get(primary):
-            errors.append((
-                name,
-                f"основной метод «{primary_raw}» не имеет адреса" if lang == "ru"
-                else f"primary method '{primary_raw}' has no address"
-            ))
+            invalid.append(ParsedRow(ImportRow(name),
+                f"основной «{primary}» не имеет адреса" if lang == "ru"
+                else f"primary '{primary}' has no address"))
             continue
 
-        rows.append(ImportRow(name=name, site=site, usdt=usdt, paypal=paypal, primary=primary))
+        valid.append(ParsedRow(ImportRow(name=name, site=site, usdt=usdt, paypal=paypal, primary=primary)))
 
-    return rows, errors
+    return valid, invalid
 
 
 # --------------------------------------------------------------------------- #
-# Processor
+# Plan builder (no DB writes yet)
 # --------------------------------------------------------------------------- #
-async def process_import(rows: list[ImportRow], user: dict, lang: str) -> ImportResult:
-    result = ImportResult()
-
-    for row in rows:
-        # Get or create blogger
-        db_b = await get_blogger_by_name(row.name, user["id"])
+async def build_plan(valid_rows: list[ParsedRow], manager_id: int) -> list[PlannedChange]:
+    changes: list[PlannedChange] = []
+    for pr in valid_rows:
+        row = pr.row
+        db_b = await get_blogger_by_name(row.name, manager_id)
         is_new = db_b is None
-        if is_new:
-            db_b = await add_blogger(row.name, user["id"])
+
+        old_primary = ""
+        existing_methods: dict[str, str] = {}  # type -> address
+
+        if not is_new:
+            pm = await get_primary_method(db_b["id"])
+            old_primary = pm["type"] if pm else ""
+            for m in await get_active_methods(db_b["id"]):
+                existing_methods[m["type"]] = m["address"]
+
+        methods = [(t, a) for t, a in [
+            ("site", row.site), ("usdt-trc20", row.usdt), ("paypal", row.paypal)
+        ] if a]
+
+        # Compute per-method status
+        statuses = []
+        for mtype, addr in methods:
+            if mtype not in existing_methods:
+                statuses.append("added")
+            elif existing_methods[mtype] == addr:
+                statuses.append("same")
+            else:
+                statuses.append("changed")
+
+        primary_changed = (not is_new) and old_primary and old_primary != row.primary
+
+        changes.append(PlannedChange(
+            name=row.name,
+            is_new=is_new,
+            methods=methods,
+            method_statuses=statuses,
+            primary=row.primary,
+            old_primary=old_primary,
+            primary_changed=primary_changed,
+        ))
+    return changes
+
+
+# --------------------------------------------------------------------------- #
+# Suspicion check
+# --------------------------------------------------------------------------- #
+def is_suspicious(changes: list[PlannedChange]) -> bool:
+    """True if >40% of existing bloggers have their primary method changed."""
+    existing = [c for c in changes if not c.is_new]
+    if not existing:
+        return False
+    changed = [c for c in existing if c.primary_changed]
+    return len(changed) / len(existing) > 0.4
+
+
+# --------------------------------------------------------------------------- #
+# Apply changes
+# --------------------------------------------------------------------------- #
+async def apply_changes(
+    changes: list[PlannedChange], manager_id: int, user: dict
+) -> tuple[list[str], list[str]]:
+    """Returns (added_names, updated_names)."""
+    added, updated = [], []
+    for c in changes:
+        db_b = await get_blogger_by_name(c.name, manager_id)
+        if db_b is None:
+            db_b = await add_blogger(c.name, manager_id)
             if db_b is None:
-                # Race condition – try fetching again
-                db_b = await get_blogger_by_name(row.name, user["id"])
+                db_b = await get_blogger_by_name(c.name, manager_id)
             if db_b is None:
-                result.errors.append((row.name, "не удалось создать" if lang == "ru" else "failed to create"))
                 continue
 
-        # Add methods
-        added_methods = {}
-        method_specs = [
-            ("site",       row.site),
-            ("usdt-trc20", row.usdt),
-            ("paypal",     row.paypal),
-        ]
-        for mtype, address in method_specs:
-            if not address:
-                continue
+        added_methods: dict[str, int] = {}
+        for mtype, address in c.methods:
             m = await add_payment_method(db_b["id"], mtype, address)
             added_methods[mtype] = m["id"]
 
-        # Set primary
-        primary_id = added_methods.get(row.primary)
-        if primary_id:
-            await set_primary_method(primary_id, db_b["id"])
+        if c.primary in added_methods:
+            await set_primary_method(added_methods[c.primary], db_b["id"])
 
-        if is_new:
-            result.added.append(row.name)
+        action = "added" if c.is_new else "updated"
+        log_info("IMPORT_BLOGGER", user_id=user["telegram_id"],
+                 username=user["username"], blogger=c.name, result=action)
+        await db_log(user["id"], "IMPORT_BLOGGER",
+                     f"blogger={c.name} | action={action} | primary={c.primary}")
+
+        if c.is_new:
+            added.append(c.name)
         else:
-            result.updated.append(row.name)
+            updated.append(c.name)
 
-        log_info(
-            "IMPORT_BLOGGER",
-            user_id=user["telegram_id"],
-            username=user["username"],
-            blogger=row.name,
-            action="added" if is_new else "updated",
-            methods=",".join(added_methods.keys()),
-            primary=row.primary,
-        )
-        await db_log(
-            user["id"], "IMPORT_BLOGGER",
-            f"blogger={row.name} | action={'added' if is_new else 'updated'} | primary={row.primary}"
-        )
-
-    return result
+    return added, updated
 
 
 # --------------------------------------------------------------------------- #
-# Format result message
+# Format result
 # --------------------------------------------------------------------------- #
-def format_result(
-    result: ImportResult,
-    parse_errors: list[tuple[str, str]],
-    lang: str,
-) -> str:
+def format_plan_summary(changes: list[PlannedChange], lang: str) -> str:
     lines = []
+    _status_ru = {"added": "добавлен", "changed": "изменён", "same": "не изменился"}
+    _status_en = {"added": "added",    "changed": "changed",  "same": "unchanged"}
 
-    if result.added:
-        header = f"Добавлено ({len(result.added)}):" if lang == "ru" else f"Added ({len(result.added)}):"
-        lines.append(header)
-        for name in result.added:
-            lines.append(f"  + {name}")
+    for c in changes:
+        if lang == "ru":
+            tag = "новый" if c.is_new else "обновление"
+            if c.primary_changed:
+                tag += f", основной {c.old_primary} → {c.primary}"
+        else:
+            tag = "new" if c.is_new else "update"
+            if c.primary_changed:
+                tag += f", primary {c.old_primary} → {c.primary}"
 
-    if result.updated:
-        header = f"Обновлено ({len(result.updated)}):" if lang == "ru" else f"Updated ({len(result.updated)}):"
-        lines.append(header)
-        for name in result.updated:
-            lines.append(f"  ~ {name}")
+        lines.append(f"+ {c.name} ({tag})")
 
-    all_errors = parse_errors + result.errors
-    if all_errors:
-        header = f"Ошибки ({len(all_errors)}):" if lang == "ru" else f"Errors ({len(all_errors)}):"
-        lines.append(header)
-        for name, reason in all_errors:
-            lines.append(f"  ✗ {name}: {reason}")
-
-    if not lines:
-        return "Нет данных для импорта." if lang == "ru" else "No data to import."
+        for (mtype, addr), status in zip(c.methods, c.method_statuses):
+            label = _METHOD_LABELS.get(mtype, mtype)
+            is_primary = (mtype == c.primary)
+            status_label = (_status_ru if lang == "ru" else _status_en)[status]
+            primary_marker = " [+]" if is_primary else ""
+            lines.append(f"  {label}: {addr} ({status_label}){primary_marker}")
 
     return "\n".join(lines)
 
 
+def format_final_result(
+    added: list[str],
+    updated: list[str],
+    invalid: list[ParsedRow],
+    lang: str,
+) -> str:
+    parts = []
+    if added:
+        h = f"Добавлено ({len(added)}):" if lang == "ru" else f"Added ({len(added)}):"
+        parts.append(h)
+        for name in added:
+            parts.append(f"  + {name}")
+    if updated:
+        h = f"Обновлено ({len(updated)}):" if lang == "ru" else f"Updated ({len(updated)}):"
+        parts.append(h)
+        for name in updated:
+            parts.append(f"  ~ {name}")
+    if invalid:
+        h = f"Пропущено ({len(invalid)}):" if lang == "ru" else f"Skipped ({len(invalid)}):"
+        parts.append(h)
+        for pr in invalid:
+            parts.append(f"  ✗ {pr.row.name}: {pr.error}")
+    if not parts:
+        return "Нет данных для импорта." if lang == "ru" else "Nothing to import."
+    return "\n".join(parts)
+
+
 # --------------------------------------------------------------------------- #
-# /import-bloggers entry
+# Entry point
 # --------------------------------------------------------------------------- #
+_IMPORT_NAV_BUTTONS = {
+    "🏠 Home", "💸 Payout", "👥 Bloggers", "⚙️ Settings",
+    "🏠 Главная", "💸 Выплата", "👥 Блогеры", "⚙️ Настройки",
+}
+
+
+
+async def _send_import_instructions(target, lang: str, cancel_kb):
+    """Send import instructions to user."""
+    if lang == "ru":
+        text = (
+            "Отправь файл .txt/.tsv или вставь список прямо сюда.\n"
+            "Одна строка – один блогер. Бот сам определит тип каждого поля.\n\n"
+            "Порядок не важен – просто перечисли через пробел:\n"
+            "- имя блогера\n"
+            "- Site ID (24 символа, только цифры и a-f)\n"
+            "- USDT-TRC20 (начинается с T, 34 символа)\n"
+            "- PayPal (адрес с @)\n"
+            "- основной метод в конце: site, usdt-trc20 или paypal\n\n"
+            "Если метод один – основной определится автоматически.\n\n"
+            "Примеры:\n"
+            "`Name123 69cd46109be3718872a56f85 site`\n"
+            "`blogger456 TDj7hq3Nug4MAh3GXCwLDZkMY4zcqcSyDy usdt-trc20`\n"
+            "`example789 email@example.com paypal`\n"
+            "`multi123 SiteID USDT_addr email@ex.com usdt-trc20`"
+        )
+    else:
+        text = (
+            "Send a .txt/.tsv file or paste the list here.\n"
+            "One line = one blogger. The bot detects each field automatically.\n\n"
+            "Just list everything separated by spaces:\n"
+            "- blogger name\n"
+            "- Site ID (24 chars, digits and a-f only)\n"
+            "- USDT-TRC20 (starts with T, 34 chars)\n"
+            "- PayPal (address with @)\n"
+            "- primary method at the end: site, usdt-trc20 or paypal\n\n"
+            "Single method – primary is set automatically.\n\n"
+            "Examples:\n"
+            "`Name123 69cd46109be3718872a56f85 site`\n"
+            "`blogger456 TDj7hq3Nug4MAh3GXCwLDZkMY4zcqcSyDy usdt-trc20`\n"
+            "`example789 email@example.com paypal`\n"
+            "`multi123 SiteID USDT_addr email@ex.com usdt-trc20`"
+        )
+    await target.reply_text(text, reply_markup=cancel_kb, parse_mode="Markdown")
+
+
+async def cmd_import_bloggers_from_callback(update, context):
+    """Entry point from inline button (settings screen)."""
+    query = update.callback_query
+    user = await get_user(update.effective_user.id)
+    lang = get_lang(user) if user else "en"
+    context.user_data["ib_user"] = user
+    cancel_kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✕ Отмена" if lang == "ru" else "✕ Cancel",
+                             callback_data="ib_cancel")
+    ]])
+    await _send_import_instructions(query.message, lang, cancel_kb)
+
+
 async def cmd_import_bloggers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await get_user_or_reject(update)
     if not user:
         return ConversationHandler.END
     lang = get_lang(user)
     context.user_data["ib_user"] = user
-
-    if lang == "ru":
-        text = (
-            "Вставьте список блогеров или отправьте файл .txt/.tsv\n\n"
-            "Формат (tab-разделитель, одна строка = один блогер):\n"
-            "имя  →  Site ID  →  USDT-TRC20  →  PayPal  →  основной\n\n"
-            "Примеры:\n"
-            "braba7x.ff1\t690779e7e54ed806f3d730b4\t\t\tsite\n"
-            "taypk7\t\tTLBwE3pdG9UYeds...\t\tusdt-trc20\n"
-            "blogger3\t\t\tuser@gmail.com\tpaypal\n\n"
-            "Пустые ячейки пропускаются. Хотя бы один метод обязателен.\n"
-            "/cancel — отмена"
-        )
-    else:
-        text = (
-            "Paste the blogger list or send a .txt/.tsv file\n\n"
-            "Format (tab-separated, one line = one blogger):\n"
-            "name  →  Site ID  →  USDT-TRC20  →  PayPal  →  primary\n\n"
-            "Examples:\n"
-            "braba7x.ff1\t690779e7e54ed806f3d730b4\t\t\tsite\n"
-            "taypk7\t\tTLBwE3pdG9UYeds...\t\tusdt-trc20\n"
-            "blogger3\t\t\tuser@gmail.com\tpaypal\n\n"
-            "Empty cells are skipped. At least one method required.\n"
-            "/cancel — cancel"
-        )
-    await update.message.reply_text(text)
+    cancel_kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✕ Отмена" if lang == "ru" else "✕ Cancel",
+                             callback_data="ib_cancel")
+    ]])
+    await _send_import_instructions(update.message, lang, cancel_kb)
     return WAIT_DATA
 
 
 # --------------------------------------------------------------------------- #
-# Got text
+# Parse and plan
 # --------------------------------------------------------------------------- #
-async def import_got_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+async def _send_chunked(target, text: str, reply_markup=None):
+    """Split text into <=4000-char chunks and send as separate messages.
+    The inline keyboard is attached to the last chunk only."""
+    MAX = 4000
+    if len(text) <= MAX:
+        await target.reply_text(text, reply_markup=reply_markup)
+        return
+    # Split by lines, group into chunks
+    lines = text.splitlines(keepends=True)
+    chunks = []
+    current = ""
+    for line in lines:
+        if len(current) + len(line) > MAX:
+            if current:
+                chunks.append(current.rstrip())
+            current = line
+        else:
+            current += line
+    if current.strip():
+        chunks.append(current.rstrip())
+    for i, chunk in enumerate(chunks):
+        kb = reply_markup if i == len(chunks) - 1 else None
+        await target.reply_text(chunk, reply_markup=kb)
+
+
+async def _handle_parsed_text(text: str, update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = context.user_data.get("ib_user") or await get_user(update.effective_user.id)
     lang = get_lang(user) if user else "en"
 
-    text = update.message.text.strip()
-    rows, parse_errors = parse_import_text(text, lang)
+    valid, invalid = parse_import_text(text, lang)
 
-    if not rows and not parse_errors:
-        await update.message.reply_text(
-            "Не найдено строк." if lang == "ru" else "No rows found."
+    if not valid and not invalid:
+        await update.effective_message.reply_text(
+            "Не найдено строк с данными." if lang == "ru" else "No data rows found."
         )
         return WAIT_DATA
 
-    result = await process_import(rows, user, lang)
-    summary = format_result(result, parse_errors, lang)
-    await update.message.reply_text(summary, reply_markup=nav_keyboard(lang))
-    return ConversationHandler.END
+    if not valid:
+        # Only errors — show and stay
+        lines = [("Все строки содержат ошибки:" if lang == "ru" else "All rows have errors:")]
+        for pr in invalid:
+            lines.append(f"  ✗ {pr.row.name}: {pr.error}")
+        cancel_kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✕ Отмена" if lang == "ru" else "✕ Cancel",
+                                 callback_data="ib_cancel")
+        ]])
+        from handlers.common import nav_keyboard as _nav_kb
+        _user = context.user_data.get("ib_user")
+        _lang = get_lang(_user) if _user else "en"
+        await update.effective_message.reply_text("\n".join(lines), reply_markup=_nav_kb(_lang))
+        return ConversationHandler.END
+
+    # Build plan
+    changes = await build_plan(valid, user["id"])
+    context.user_data["ib_changes"] = changes
+    context.user_data["ib_invalid"] = invalid
+    context.user_data["ib_user"]    = user
+
+    suspicious = is_suspicious(changes)
+    plan_text  = format_plan_summary(changes, lang)
+
+    # Show invalid rows if any
+    skip_text = ""
+    if invalid:
+        skip_lines = [("\nПропускаются:" if lang == "ru" else "\nSkipped:")]
+        for pr in invalid:
+            skip_lines.append(f"  ✗ {pr.row.name}: {pr.error}")
+        skip_text = "\n".join(skip_lines)
+
+    if suspicious:
+        # Count how many primary methods change
+        existing    = [c for c in changes if not c.is_new]
+        changed_cnt = sum(1 for c in existing if c.primary_changed)
+        pct         = int(changed_cnt / len(existing) * 100) if existing else 0
+
+        if lang == "ru":
+            warn = (
+                f"⚠️ У {changed_cnt} из {len(existing)} уже существующих блогеров "
+                f"основной метод оплаты изменится ({pct}%). "
+                f"Это выше нормы – скорее всего, что-то не так с данными. "
+                f"Перепроверь перед тем как продолжить.\n\n"
+            )
+            confirm_text = warn + plan_text + skip_text
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✓ Всё верно, применить", callback_data="ib_confirm")],
+                [InlineKeyboardButton("✗ Отмена",               callback_data="ib_cancel")],
+            ])
+        else:
+            warn = (
+                f"⚠️ {changed_cnt} out of {len(existing)} existing bloggers "
+                f"would have their primary payment method changed ({pct}%). "
+                f"This is unusually high – likely something is wrong with the data. "
+                f"Please double-check before continuing.\n\n"
+            )
+            confirm_text = warn + plan_text + skip_text
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✓ Looks correct, apply", callback_data="ib_confirm")],
+                [InlineKeyboardButton("✗ Cancel",               callback_data="ib_cancel")],
+            ])
+        await _send_chunked(update.effective_message, confirm_text, kb)
+        return WAIT_CONFIRM
+
+    # No suspicion — still show plan and ask for confirmation
+    if lang == "ru":
+        header = f"Готово к импорту ({len(changes)} блогеров):\n\n"
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✓ Применить", callback_data="ib_confirm")],
+            [InlineKeyboardButton("✗ Отмена",    callback_data="ib_cancel")],
+        ])
+    else:
+        header = f"Ready to import ({len(changes)} bloggers):\n\n"
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✓ Apply",  callback_data="ib_confirm")],
+            [InlineKeyboardButton("✗ Cancel", callback_data="ib_cancel")],
+        ])
+    await _send_chunked(update.effective_message, header + plan_text + skip_text, kb)
+    return WAIT_CONFIRM
 
 
-# --------------------------------------------------------------------------- #
-# Got file
-# --------------------------------------------------------------------------- #
+async def import_got_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (update.message.text or "").strip()
+    if text in _IMPORT_NAV_BUTTONS or text.startswith("🏠") or text.startswith("💸"):
+        # Nav button pressed — cancel import silently, let fallback handle it
+        return ConversationHandler.END
+    return await _handle_parsed_text(text, update, context)
+
+
 async def import_got_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = context.user_data.get("ib_user") or await get_user(update.effective_user.id)
     lang = get_lang(user) if user else "en"
-    doc: Document = update.message.document
+    doc  = update.message.document
 
-    # Validate file type
     fname = doc.file_name or ""
     if not (fname.endswith(".txt") or fname.endswith(".tsv")):
         await update.message.reply_text(
-            "Поддерживаются только файлы .txt и .tsv"
+            "Принимаются только файлы .txt и .tsv"
             if lang == "ru" else
-            "Only .txt and .tsv files are supported"
+            "Only .txt and .tsv files are accepted"
         )
         return WAIT_DATA
 
-    # Size limit: 512 KB
     if doc.file_size and doc.file_size > 512 * 1024:
         await update.message.reply_text(
-            "Файл слишком большой (максимум 512 КБ)"
+            "Файл слишком большой – максимум 512 КБ"
             if lang == "ru" else
-            "File too large (max 512 KB)"
+            "File too large – max 512 KB"
         )
         return WAIT_DATA
 
-    file = await doc.get_file()
+    tg_file = await doc.get_file()
     buf = io.BytesIO()
-    await file.download_to_memory(buf)
+    await tg_file.download_to_memory(buf)
     try:
         text = buf.getvalue().decode("utf-8")
     except UnicodeDecodeError:
@@ -333,37 +576,67 @@ async def import_got_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = buf.getvalue().decode("cp1251")
         except Exception:
             await update.message.reply_text(
-                "Не удалось прочитать файл. Используйте кодировку UTF-8."
+                "Не удалось прочитать файл. Используй кодировку UTF-8."
                 if lang == "ru" else
                 "Could not read file. Use UTF-8 encoding."
             )
             return WAIT_DATA
 
-    rows, parse_errors = parse_import_text(text, lang)
+    return await _handle_parsed_text(text, update, context)
 
-    if not rows and not parse_errors:
-        await update.message.reply_text(
-            "Файл пустой или не содержит данных."
-            if lang == "ru" else
-            "File is empty or contains no data."
-        )
-        return WAIT_DATA
 
-    result = await process_import(rows, user, lang)
-    summary = format_result(result, parse_errors, lang)
-    await update.message.reply_text(summary, reply_markup=nav_keyboard(lang))
+# --------------------------------------------------------------------------- #
+# Confirmation callbacks
+# --------------------------------------------------------------------------- #
+async def cb_ib_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user    = context.user_data.get("ib_user") or await get_user(update.effective_user.id)
+    lang    = get_lang(user) if user else "en"
+    changes = context.user_data.get("ib_changes", [])
+    invalid = context.user_data.get("ib_invalid", [])
+
+    if not changes:
+        await query.edit_message_text("Нет данных." if lang == "ru" else "No data.")
+        return ConversationHandler.END
+
+    await query.edit_message_text(
+        "Применяю..." if lang == "ru" else "Applying..."
+    )
+
+    added, updated = await apply_changes(changes, user["id"], user)
+
+    summary = format_final_result(added, updated, invalid, lang)
+    await query.message.reply_text(summary, reply_markup=nav_keyboard(lang))
+    context.user_data.pop("ib_changes", None)
+    context.user_data.pop("ib_invalid", None)
+    return ConversationHandler.END
+
+
+async def cb_ib_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user = await get_user(update.effective_user.id)
+    lang = get_lang(user) if user else "en"
+    context.user_data.pop("ib_changes", None)
+    context.user_data.pop("ib_invalid", None)
+    context.user_data.pop("ib_user", None)
+    await query.edit_message_reply_markup(reply_markup=None)
+    await query.message.reply_text("Отменено." if lang == "ru" else "Cancelled.")
     return ConversationHandler.END
 
 
 # --------------------------------------------------------------------------- #
-# /cancel
+# /cancel command
 # --------------------------------------------------------------------------- #
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await get_user(update.effective_user.id)
     lang = get_lang(user) if user else "en"
-    context.user_data.clear()
+    context.user_data.pop("ib_changes", None)
+    context.user_data.pop("ib_invalid", None)
+    context.user_data.pop("ib_user", None)
     await update.message.reply_text(
-        "Отменено." if lang == "ru" else "Cancelled."
+        "Импорт отменён." if lang == "ru" else "Import cancelled."
     )
     return ConversationHandler.END
 
@@ -372,8 +645,14 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Registration
 # --------------------------------------------------------------------------- #
 def register_import_handlers(app):
+    # Register globally so callbacks work from any message in the chain
+    app.add_handler(CallbackQueryHandler(cb_ib_confirm, pattern=r"^ib_confirm$"))
+    app.add_handler(CallbackQueryHandler(cb_ib_cancel,  pattern=r"^ib_cancel$"))
     app.add_handler(ConversationHandler(
-        entry_points=[CommandHandler("import_bloggers", cmd_import_bloggers)],
+        entry_points=[
+            CommandHandler("import_bloggers", cmd_import_bloggers),
+            CallbackQueryHandler(lambda u, c: None, pattern=r"^go_import$"),
+        ],
         states={
             WAIT_DATA: [
                 MessageHandler(
@@ -382,9 +661,15 @@ def register_import_handlers(app):
                     filters.Document.FileExtension("txt"),
                     import_got_file,
                 ),
+                CallbackQueryHandler(cb_ib_cancel,  pattern=r"^ib_cancel$"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, import_got_text),
+            ],
+            WAIT_CONFIRM: [
+                CallbackQueryHandler(cb_ib_confirm, pattern=r"^ib_confirm$"),
+                CallbackQueryHandler(cb_ib_cancel,  pattern=r"^ib_cancel$"),
             ],
         },
         fallbacks=[CommandHandler("cancel", cmd_cancel)],
         conversation_timeout=300,
+        per_message=False,
     ))

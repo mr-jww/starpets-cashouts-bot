@@ -45,7 +45,18 @@ async def set_commands(app: Application):
 # Error handler
 # --------------------------------------------------------------------------- #
 async def error_handler(update, context):
-    # Ignore stale button errors from old messages after bot update
+    # Suppress noisy network errors — they self-recover and clutter the log
+    _network_noise = (
+        "NetworkError", "SSLError", "DECRYPTION_FAILED", "BAD_RECORD_MAC",
+        "RemoteProtocolError", "ConnectError", "Server disconnected",
+    )
+    if any(p in str(context.error) for p in _network_noise):
+        logging.getLogger("starpets").warning(
+            f"[system] NETWORK_ERROR | {context.error}"
+        )
+        return
+
+    # Ignore stale button errors
     if isinstance(context.error, BadRequest) and "button_data_invalid" in str(context.error).lower():
         if update and update.callback_query:
             try:
