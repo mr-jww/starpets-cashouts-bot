@@ -57,3 +57,13 @@ def nav_keyboard(lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🏠 Home", callback_data="nav_home")],
     ])
+
+
+
+def track_action(context, action: str):
+    """Record last user action for error diagnostics."""
+    context.user_data["_last_action"] = action
+
+
+def get_last_action(context) -> str:
+    return context.user_data.get("_last_action", "unknown")

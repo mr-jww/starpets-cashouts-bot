@@ -16,7 +16,7 @@ and suppressed from ERROR level to avoid log spam.
 
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from config import LOG_DIR
 
 # --------------------------------------------------------------------------- #
@@ -55,7 +55,14 @@ _log_file = os.path.join(LOG_DIR, f"bot_{datetime.now().strftime('%Y%m')}.log")
 _file_handler    = logging.FileHandler(_log_file, encoding="utf-8")
 _console_handler = logging.StreamHandler()
 
-_fmt = logging.Formatter(
+_TZ = timezone(timedelta(hours=3))  # UTC+3 Moscow time
+
+class _TzFormatter(logging.Formatter):
+    def formatTime(self, record, datefmt=None):
+        dt = datetime.fromtimestamp(record.created, tz=_TZ)
+        return dt.strftime(datefmt or "%Y-%m-%d %H:%M:%S")
+
+_fmt = _TzFormatter(
     fmt="[%(asctime)s] [%(levelname)-5s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )

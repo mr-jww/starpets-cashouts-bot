@@ -9,10 +9,12 @@ from telegram.ext import (
     MessageHandler, ConversationHandler, filters,
 )
 
-from database.queries import upsert_user, get_user, set_user_lang, set_manager_filter, set_output_mode, set_default_fmt, set_filter_setting, db_log
+from database.queries import (upsert_user, get_user, set_user_lang, set_manager_filter,
+    set_output_mode, set_default_fmt, set_filter_setting, db_log,
+    set_manager_password, check_manager_password, reset_lockout, get_locked_users)
 from services.logger import log_info
 from handlers.common import get_user_or_reject, get_lang
-from config import ADMIN_ID
+from config import ADMIN_ID, ACTIVE_MANAGERS, MANAGER_BUTTON_ORDER
 
 # States for /reformat conversation
 WAIT_REFORMAT = 0
@@ -72,27 +74,21 @@ def _start_text(name: str, lang: str) -> str:
 def _main_keyboard(lang: str, role: str = "manager") -> InlineKeyboardMarkup:
     if lang == "ru":
         buttons = [
-            [
-                InlineKeyboardButton("➕ Блогер",   callback_data="bm:add_blogger_start:home"),
-                InlineKeyboardButton("💳 Метод",    callback_data="bm:add_method_list"),
-            ],
-            [InlineKeyboardButton("💸 Заказать выплату", callback_data="start_payout"),
-             InlineKeyboardButton("🔄 Переформат", callback_data="rf_again")],
+            [InlineKeyboardButton("➕ Блогер",   callback_data="bm:add_blogger_start:home")],
+            [InlineKeyboardButton("💸 Заказать выплату", callback_data="start_payout")],
             [InlineKeyboardButton("📋 Инструкция", callback_data="show_help"),
              InlineKeyboardButton("⚙️ Настройки",  callback_data="show_settings")],
+            [InlineKeyboardButton("••• Ещё",        callback_data="show_more")],
         ]
         if role == "admin":
             buttons.append([InlineKeyboardButton("🔧 Админ", callback_data="show_admin_hint")])
     else:
         buttons = [
-            [
-                InlineKeyboardButton("➕ Blogger",  callback_data="bm:add_blogger_start:home"),
-                InlineKeyboardButton("💳 Method",   callback_data="bm:add_method_list"),
-            ],
-            [InlineKeyboardButton("💸 Create payout",  callback_data="start_payout"),
-             InlineKeyboardButton("🔄 Reformat",       callback_data="rf_again")],
+            [InlineKeyboardButton("➕ Blogger",  callback_data="bm:add_blogger_start:home")],
+            [InlineKeyboardButton("💸 Create payout",  callback_data="start_payout")],
             [InlineKeyboardButton("📋 Instructions", callback_data="show_help"),
              InlineKeyboardButton("⚙️ Settings",     callback_data="show_settings")],
+            [InlineKeyboardButton("••• More",         callback_data="show_more")],
         ]
         if role == "admin":
             buttons.append([InlineKeyboardButton("🔧 Admin", callback_data="show_admin_hint")])
@@ -161,6 +157,29 @@ async def cb_show_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --------------------------------------------------------------------------- #
 # Inline button: Settings
 # --------------------------------------------------------------------------- #
+
+async def cb_show_more(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user = await get_user(update.effective_user.id)
+    lang = get_lang(user) if user else "en"
+    if lang == "ru":
+        text = "Дополнительные функции:"
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Переформат",     callback_data="rf_again")],
+            [InlineKeyboardButton("📥 Импорт блогеров", callback_data="go_import")],
+            [InlineKeyboardButton("← Назад",           callback_data="show_start")],
+        ])
+    else:
+        text = "Additional features:"
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Reformat",        callback_data="rf_again")],
+            [InlineKeyboardButton("📥 Import bloggers", callback_data="go_import")],
+            [InlineKeyboardButton("← Back",             callback_data="show_start")],
+        ])
+    await query.edit_message_text(text, reply_markup=kb)
+
+
 async def cb_show_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -237,7 +256,6 @@ def _settings_keyboard(user: dict, lang: str) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(f"PENDING: {'включать' if ipe else 'пропускать'}", callback_data="toggle_filter_pending"),
                 InlineKeyboardButton(f"Предупрежд.: {'вкл' if wpe else 'выкл'}", callback_data="toggle_warn_pending"),
             ],
-            [InlineKeyboardButton("📥 Импорт блогеров", callback_data="go_import")],
             [InlineKeyboardButton("← Назад", callback_data="show_start")],
         ])
 
@@ -259,7 +277,6 @@ def _settings_keyboard(user: dict, lang: str) -> InlineKeyboardMarkup:
             InlineKeyboardButton(f"PENDING: {'include' if ipe else 'skip'}", callback_data="toggle_filter_pending"),
             InlineKeyboardButton(f"Warn: {'on' if wpe else 'off'}", callback_data="toggle_warn_pending"),
         ],
-        [InlineKeyboardButton("📥 Import bloggers", callback_data="go_import")],
         [InlineKeyboardButton("← Back", callback_data="show_start")],
     ])
 
@@ -283,44 +300,225 @@ async def cb_set_lang(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def _mgr_selection_keyboard(lang: str) -> InlineKeyboardMarkup:
+    """Build 3-column manager selection keyboard."""
+    buttons = []
+    row = []
+    for name in MANAGER_BUTTON_ORDER:
+        row.append(InlineKeyboardButton(name, callback_data=f"mgr_pick:{name}"))
+        if len(row) == 3:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    # Bottom row: manual input + clear
+    if lang == "ru":
+        buttons.append([
+            InlineKeyboardButton("✏ Ввести вручную", callback_data="mgr_manual"),
+            InlineKeyboardButton("✕ Убрать фильтр",  callback_data="mgr_clear"),
+        ])
+        buttons.append([InlineKeyboardButton("← Назад", callback_data="show_settings")])
+    else:
+        buttons.append([
+            InlineKeyboardButton("✏ Enter manually", callback_data="mgr_manual"),
+            InlineKeyboardButton("✕ Clear filter",   callback_data="mgr_clear"),
+        ])
+        buttons.append([InlineKeyboardButton("← Back", callback_data="show_settings")])
+    return InlineKeyboardMarkup(buttons)
+
+
 async def cb_set_mgr(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user = await get_user(update.effective_user.id)
     lang = get_lang(user) if user else "en"
-    context.user_data["awaiting_mgr"] = True
     context.user_data["awaiting_mgr_msg_id"] = query.message.message_id
-    cancel_kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton(
-            "✕ Убрать фильтр" if lang == "ru" else "✕ Clear filter",
-            callback_data="mgr_clear"
-        ),
-        InlineKeyboardButton(
-            "← Назад" if lang == "ru" else "← Back",
-            callback_data="show_settings"
-        ),
-    ]])
+    text = (
+        "Выбери своё имя или введи вручную:"
+        if lang == "ru" else
+        "Select your name or enter manually:"
+    )
+    await query.edit_message_text(text, reply_markup=await _mgr_selection_keyboard(lang))
+
+
+async def cb_mgr_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manager selected from button — ask for password."""
+    query = update.callback_query
+    await query.answer()
+    user = await get_user(update.effective_user.id)
+    lang = get_lang(user) if user else "en"
+
+    # Warn if payout is active
+    _payout_active = any(k.startswith("pd_") or k in ("known", "unknown", "payout_raw")
+                         for k in context.user_data)
+    if _payout_active:
+        await query.answer(
+            "Сначала завершите текущую выплату" if lang == "ru"
+            else "Finish the current payout first",
+            show_alert=True
+        )
+        return
+
+    name = query.data.split(":", 1)[1]
+    context.user_data["mgr_pending_name"] = name
+    context.user_data["awaiting_mgr_msg_id"] = query.message.message_id
+    context.user_data["awaiting_mgr_pw"] = True
+
     if lang == "ru":
         await query.edit_message_text(
-            "Введите имя менеджера точно как оно написано в столбце Manager таблицы.\n\n"
-            "Если хотите убрать фильтр и видеть всех блогеров — нажмите кнопку ниже.",
-            reply_markup=cancel_kb,
+            f"Выбрано: {name}\n\nВведи пароль (6 цифр):\n/cancel — отмена",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("← Назад", callback_data="set_mgr")
+            ]])
         )
     else:
         await query.edit_message_text(
-            "Enter your manager name exactly as it appears in the Manager column.\n\n"
-            "To remove the filter and see all bloggers — press the button below.",
-            reply_markup=cancel_kb,
+            f"Selected: {name}\n\nEnter password (6 digits):\n/cancel — cancel",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("← Back", callback_data="set_mgr")
+            ]])
         )
-    return
 
-    # dead code kept for reference only
-    if False:
+
+async def cb_mgr_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manual name input — no password required."""
+    query = update.callback_query
+    await query.answer()
+    user = await get_user(update.effective_user.id)
+    lang = get_lang(user) if user else "en"
+    context.user_data["awaiting_mgr"] = True
+    context.user_data["awaiting_mgr_manual"] = True
+    context.user_data["awaiting_mgr_msg_id"] = query.message.message_id
+    if lang == "ru":
         await query.edit_message_text(
-            "Enter your manager name exactly as it appears in the Manager column.\n"
-            "Example: John\n\n"
-            "/skip — clear filter (show all)"
+            "Введи своё имя менеджера (точно как в таблице):\n/cancel — отмена",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("← Назад", callback_data="set_mgr")
+            ]])
         )
+    else:
+        await query.edit_message_text(
+            "Enter your manager name (exactly as in the spreadsheet):\n/cancel — cancel",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("← Back", callback_data="set_mgr")
+            ]])
+        )
+
+
+async def _apply_mgr_name(update, context, name: str, lang: str):
+    """Set manager filter and return to settings."""
+    await set_manager_filter(update.effective_user.id, name)
+    log_info("MGR_FILTER_SET", user_id=update.effective_user.id,
+             username=update.effective_user.username, name=name)
+    user = await get_user(update.effective_user.id)
+    user["manager_filter"] = name
+    msg_id = context.user_data.pop("awaiting_mgr_msg_id", None)
+    context.user_data.pop("awaiting_mgr", None)
+    context.user_data.pop("awaiting_mgr_manual", None)
+    context.user_data.pop("mgr_pending_name", None)
+    context.user_data.pop("awaiting_mgr_pw", None)
+    if msg_id:
+        try:
+            await update.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=msg_id,
+                text=_settings_text(user, lang),
+                reply_markup=_settings_keyboard(user, lang),
+            )
+            return
+        except Exception:
+            pass
+    await update.effective_chat.send_message(
+        _settings_text(user, lang),
+        reply_markup=_settings_keyboard(user, lang),
+    )
+
+
+async def handle_mgr_pw_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle password input for manager selection."""
+    if not context.user_data.get("awaiting_mgr_pw"):
+        return False
+    user_db = await get_user(update.effective_user.id)
+    lang = get_lang(user_db) if user_db else "en"
+    pw = (update.message.text or "").strip()
+    name = context.user_data.get("mgr_pending_name", "")
+    msg_id = context.user_data.get("awaiting_mgr_msg_id")
+
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
+    # Check if name matches an active manager
+    expected_pw = ACTIVE_MANAGERS.get(name)
+    if not expected_pw:
+        # Unknown manager name — no password needed, just set
+        await _apply_mgr_name(update, context, name, lang)
+        return True
+
+    if pw == expected_pw:
+        await _apply_mgr_name(update, context, name, lang)
+        return True
+
+    # Wrong password — track attempts in user_data (not DB, simpler)
+    attempts = context.user_data.get("mgr_pw_attempts", 0) + 1
+    context.user_data["mgr_pw_attempts"] = attempts
+    remaining = 5 - attempts
+
+    if remaining <= 0:
+        context.user_data.pop("awaiting_mgr_pw", None)
+        context.user_data.pop("mgr_pw_attempts", None)
+        context.user_data.pop("mgr_pending_name", None)
+        if msg_id:
+            try:
+                await update.bot.edit_message_text(
+                    chat_id=update.effective_chat.id,
+                    message_id=msg_id,
+                    text=(
+                        "Слишком много неверных попыток. Подожди 10 минут."
+                        if lang == "ru" else
+                        "Too many wrong attempts. Wait 10 minutes."
+                    ),
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton(
+                            "← К выбору" if lang == "ru" else "← Back to selection",
+                            callback_data="set_mgr"
+                        )
+                    ]])
+                )
+            except Exception:
+                pass
+        # Notify admin
+        from config import ADMIN_ID as _ADMIN_ID
+        try:
+            await update.bot.send_message(
+                _ADMIN_ID,
+                f"⚠️ 5 неверных попыток входа за {name} от @{update.effective_user.username} (id={update.effective_user.id})"
+            )
+        except Exception:
+            pass
+        return True
+
+    if msg_id:
+        try:
+            await update.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=msg_id,
+                text=(
+                    f"Неверный пароль. Осталось попыток: {remaining}\nВведи пароль:"
+                    if lang == "ru" else
+                    f"Wrong password. Attempts left: {remaining}\nEnter password:"
+                ),
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        "← Назад" if lang == "ru" else "← Back",
+                        callback_data="set_mgr"
+                    )
+                ]])
+            )
+        except Exception:
+            pass
+    return True
 
 
 async def handle_mgr_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -395,29 +593,21 @@ async def cb_mgr_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Inline button: Admin hint
 # --------------------------------------------------------------------------- #
 async def cb_show_admin_hint(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Open real admin panel instead of showing stale text."""
     query = update.callback_query
     await query.answer()
     user = await get_user(update.effective_user.id)
     lang = get_lang(user) if user else "en"
-    if lang == "ru":
-        text = (
-            "Команды администратора:\n\n"
-            "/admin — пользователи, блогеры, последние выплаты\n"
-            "/admin_logs — последние 30 записей лога\n"
-            "/admin_search <имя> — поиск блогера по всей базе\n"
-            "/backup — создать бэкап\n"
-            "/restore — восстановить БД из файла"
-        )
-    else:
-        text = (
-            "Admin commands:\n\n"
-            "/admin — users, bloggers, recent payouts\n"
-            "/admin_logs — last 30 log entries\n"
-            "/admin_search <name> — search blogger across all managers\n"
-            "/backup — create backup\n"
-            "/restore — restore DB from file"
-        )
-    await query.edit_message_text(text, reply_markup=_back_keyboard(lang))
+    from handlers.admin import _admin_main_kb
+    from database.queries import get_all_users, get_all_bloggers
+    users    = await get_all_users()
+    bloggers = await get_all_bloggers()
+    text = (
+        f"Панель администратора\n\nПользователей: {len(users)}\nБлогеров: {len(bloggers)}"
+        if lang == "ru" else
+        f"Admin panel\n\nUsers: {len(users)}\nBloggers: {len(bloggers)}"
+    )
+    await query.edit_message_text(text, reply_markup=_admin_main_kb(lang))
 
 
 # --------------------------------------------------------------------------- #
@@ -547,7 +737,7 @@ async def cb_toggle_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cb_rf_again(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Start a new /reformat."""
+    """Start a new /reformat — entry point for ConversationHandler."""
     query = update.callback_query
     await query.answer()
     user = await get_user(update.effective_user.id)
@@ -558,6 +748,7 @@ async def cb_rf_again(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if lang == "ru" else
         "Paste the payout block to reformat:\n/cancel — cancel"
     )
+    return WAIT_REFORMAT
 
 
 # --------------------------------------------------------------------------- #
@@ -721,7 +912,7 @@ async def reformat_got_block(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data["rf_fmt"]       = "oneline"
     context.user_data["rf_output_mode"] = output_mode
 
-    await _send_rf_block(update.message, oneline, "oneline", lang, output_mode)
+    await _send_rf_block(update.message, oneline, "oneline", lang)
     return ConversationHandler.END
 
 
@@ -779,6 +970,10 @@ async def fallback_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Don't interfere with active import conversation
     if context.user_data.get("ib_user") is not None:
         return
+    # Don't interfere with active blogger menu text input
+    if context.user_data.get("bm_action"):
+        # Nav button pressed during text input — let handle_text_input in group 2 handle it
+        return
     if context.user_data.get("awaiting_mgr"):
         text = (update.message.text or "").strip()
         # Nav keyboard buttons must not be treated as manager name input
@@ -829,11 +1024,18 @@ async def fallback_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if "\t" in text or ("http" in text and ("  " in text or "\u00a0" in text)):
         return
 
-    await update.message.reply_text(
-        "To create a payout – /payout. For help – /help."
-        if lang == "en" else
-        "Для выплат – /payout, для справки – /help."
-    )
+    if lang == "ru":
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("💸 Выплата", callback_data="start_payout"),
+             InlineKeyboardButton("🏠 Главная", callback_data="show_start")],
+        ])
+        await update.message.reply_text("Не понял команду.", reply_markup=kb)
+    else:
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("💸 Payout", callback_data="start_payout"),
+             InlineKeyboardButton("🏠 Home",   callback_data="show_start")],
+        ])
+        await update.message.reply_text("Command not recognized.", reply_markup=kb)
 
 
 # --------------------------------------------------------------------------- #
@@ -846,7 +1048,10 @@ def register_start_handlers(app):
 
     # /reformat conversation
     app.add_handler(ConversationHandler(
-        entry_points=[CommandHandler("reformat", cmd_reformat)],
+        entry_points=[
+            CommandHandler("reformat", cmd_reformat),
+            CallbackQueryHandler(cb_rf_again, pattern=r"^rf_again$"),
+        ],
         states={
             WAIT_REFORMAT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, reformat_got_block),
@@ -860,14 +1065,15 @@ def register_start_handlers(app):
     app.add_handler(CallbackQueryHandler(cb_show_settings,   pattern=r"^show_settings$"))
     app.add_handler(CallbackQueryHandler(cb_show_admin_hint, pattern=r"^show_admin_hint$"))
     app.add_handler(CallbackQueryHandler(cb_show_start,      pattern=r"^show_start$"))
+    app.add_handler(CallbackQueryHandler(cb_show_more,        pattern=r"^show_more$"))
     app.add_handler(CallbackQueryHandler(cb_set_lang,        pattern=r"^set_lang:"))
     app.add_handler(CallbackQueryHandler(cb_set_mgr,             pattern=r"^set_mgr$"))
     app.add_handler(CallbackQueryHandler(cb_toggle_output_mode,  pattern=r"^toggle_output_mode$"))
     app.add_handler(CallbackQueryHandler(cb_toggle_default_fmt,   pattern=r"^toggle_default_fmt$"))
-    app.add_handler(CallbackQueryHandler(cb_go_import,            pattern=r"^go_import$"))
     app.add_handler(CallbackQueryHandler(cb_toggle_filter, pattern=r"^toggle_(filter|warn)_(paid|pending)$"))
     app.add_handler(CallbackQueryHandler(cb_mgr_clear,    pattern=r"^mgr_clear$"))
-    app.add_handler(CallbackQueryHandler(cb_rf_again,             pattern=r"^rf_again$"))
+    app.add_handler(CallbackQueryHandler(cb_mgr_pick,     pattern=r"^mgr_pick:"))
+    app.add_handler(CallbackQueryHandler(cb_mgr_manual,   pattern=r"^mgr_manual$"))
     app.add_handler(CallbackQueryHandler(cb_rf_toggle,       pattern=r"^rf_toggle:"))
 
     # Manager name input (outside conversation, triggered by awaiting_mgr flag)
