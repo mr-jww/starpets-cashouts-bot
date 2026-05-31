@@ -189,10 +189,18 @@ async def cmd_payout(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Got rows
 # --------------------------------------------------------------------------- #
 async def payout_got_rows(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["_last_action"] = "payout_got_rows"
     user = context.user_data["user"]
     lang = get_lang(user)
-    effective_filter = context.user_data.get("effective_filter")
     raw_text = update.message.text.strip()
+
+    # Nav buttons — end conversation silently
+    _nav = {"🏠 Home", "🏠 Главная", "💸 Payout", "💸 Выплата",
+            "👥 Bloggers", "👥 Блогеры", "⚙️ Settings", "⚙️ Настройки"}
+    if raw_text in _nav or any(raw_text.startswith(e) for e in ("🏠", "💸", "👥", "⚙️")):
+        return ConversationHandler.END
+
+    effective_filter = context.user_data.get("effective_filter")
 
     result = parse_rows(raw_text, lang)
 
@@ -375,15 +383,22 @@ async def cb_unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     unknown: list[BloggerResult] = context.user_data["unknown"]
 
     if query.data.split(":")[1] == "add":
+        added_count = 0
         for b in unknown:
             db_b = await add_blogger(b.blogger, user["id"])
             if db_b is None:
                 db_b = await get_blogger_by_name(b.blogger, user["id"])
             if db_b:
                 context.user_data["known"].append((b, db_b))
-        await query.edit_message_text(
-            f"Добавлено: {len(unknown)}." if lang == "ru" else f"Added: {len(unknown)}."
-        )
+                added_count += 1
+        if lang == "ru":
+            await query.edit_message_text(
+                f"Добавлено: {added_count}. Теперь укажи методы оплаты для них."
+            )
+        else:
+            await query.edit_message_text(
+                f"Added: {added_count}. Now specify payment methods for them."
+            )
     else:
         context.user_data["skipped"].extend([b.blogger for b in unknown])
         await query.edit_message_text(
@@ -461,6 +476,46 @@ async def quick_address_input(update: Update, context: ContextTypes.DEFAULT_TYPE
     return await _process_known(update, context)
 
 
+async def _finish_payout(eff, context, lang: str):
+    """Send final summary and end conversation."""
+    known: list = context.user_data.get("known", [])
+    skipped: list = context.user_data.get("skipped", [])
+    all_texts = []
+    for br, _ in known:
+        key = _storage_key(br.blogger)
+        data = context.user_data.get(key)
+        if data:
+            fmt = data.get("fmt", "oneline")
+            text_raw = (format_oneline if fmt == "oneline" else format_multiline)(
+                data["result"], data["method_type"], data["address"], lang
+            )
+            all_texts.append(text_raw)
+
+    context.user_data["all_payout_texts"] = all_texts
+
+    if skipped:
+        await eff.reply_text(
+            f"Пропущены: {', '.join(skipped)}" if lang == "ru"
+            else f"Skipped: {', '.join(skipped)}"
+        )
+
+    has_any_errors = any(br.has_errors for br, _ in known)
+    if lang == "ru":
+        summary = (
+            f"Выплаты сформированы ({len(all_texts)} шт.). Есть ошибки — см. сводку выше."
+            if has_any_errors else
+            f"Выплаты сформированы ({len(all_texts)} шт.). Всё в порядке."
+        )
+    else:
+        summary = (
+            f"Payouts generated ({len(all_texts)}). Errors found — see summary above."
+            if has_any_errors else
+            f"Payouts generated ({len(all_texts)}). All good."
+        )
+    await eff.reply_text(summary, reply_markup=_nav_keyboard(lang))
+    return ConversationHandler.END
+
+
 # --------------------------------------------------------------------------- #
 # Process all known bloggers
 # --------------------------------------------------------------------------- #
@@ -519,58 +574,31 @@ async def _process_known(target, context):
         await db_log(user["id"], "PAYOUT_CREATED",
                      f"blogger={blogger_result.blogger} | amount={blogger_result.total_price_display}")
 
-    # Offer quick method add for bloggers without methods
+    # Offer quick method add for bloggers without methods — one at a time
     if no_method:
-        for blogger_result, db_blogger in no_method:
-            if lang == "ru":
-                text = f"Нет метода оплаты для {blogger_result.blogger}. Добавить сейчас?"
-            else:
-                text = f"No payment method for {blogger_result.blogger}. Add now?"
-            buttons = [
-                [InlineKeyboardButton(
-                    METHOD_LABELS[t],
-                    callback_data=f"qmt:{t}:{blogger_result.blogger}"
-                ) for t in METHOD_TYPES]
-            ]
-            await eff.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
-
-    if skipped:
-        await eff.reply_text(
-            f"Пропущены: {', '.join(skipped)}" if lang == "ru"
-            else f"Skipped: {', '.join(skipped)}"
-        )
-
-    # Collect all generated payout texts for "copy all"
-    all_texts = []
-    for br, _ in known:
-        key = _storage_key(br.blogger)
-        data = context.user_data.get(key)
-        if data:
-            fmt = data.get("fmt", "oneline")
-            out = data.get("output_mode", "block")
-            text_raw = (format_oneline if fmt == "oneline" else format_multiline)(
-                data["result"], data["method_type"], data["address"], lang
-            )
-            all_texts.append(text_raw)
-
-    context.user_data["all_payout_texts"] = all_texts
-
-    # Summary message
-    has_any_errors = any(br.has_errors for br, _ in known)
-    if lang == "ru":
-        count = len([b for b, _ in known if b not in [s for s in skipped]])
-        if has_any_errors:
-            summary = f"Выплаты сформированы ({len(all_texts)} шт.). Есть ошибки — см. сводку выше."
+        # Store the queue, show only first
+        context.user_data["no_method_queue"] = [
+            (br.blogger, db_b["id"]) for br, db_b in no_method[1:]
+        ]
+        blogger_result, db_blogger = no_method[0]
+        if lang == "ru":
+            text = f"Нет метода оплаты для {blogger_result.blogger}. Добавить сейчас?"
         else:
-            summary = f"Выплаты сформированы ({len(all_texts)} шт.). Всё в порядке."
-    else:
-        if has_any_errors:
-            summary = f"Payouts generated ({len(all_texts)}). Errors found — see summary above."
-        else:
-            summary = f"Payouts generated ({len(all_texts)}). All good."
+            text = f"No payment method for {blogger_result.blogger}. Add now?"
+        buttons = [
+            [InlineKeyboardButton(
+                METHOD_LABELS[t],
+                callback_data=f"qmt:{t}:{blogger_result.blogger}"
+            ) for t in METHOD_TYPES],
+            [InlineKeyboardButton(
+                "Пропустить" if lang == "ru" else "Skip",
+                callback_data=f"qmt:skip:{blogger_result.blogger}"
+            )]
+        ]
+        await eff.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+        return WAIT_QUICK_ADDRESS
 
-    await eff.reply_text(summary, reply_markup=_nav_keyboard(lang))
-    return ConversationHandler.END
+    return await _finish_payout(eff, context, lang)
 
 
 # --------------------------------------------------------------------------- #

@@ -20,13 +20,17 @@ async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user:
         return
     lang = get_lang(user)
+    # Handle both message and callback_query contexts
+    eff_msg = update.effective_message
+    if not eff_msg:
+        return
 
     arg = " ".join(context.args).strip() if context.args else ""
 
     if arg:
         db_b = await get_blogger_by_name(arg, user["id"])
         if not db_b:
-            await update.message.reply_text(
+            await eff_msg.reply_text(
                 f"Блогер «{arg}» не найден." if lang == "ru" else f"Blogger '{arg}' not found."
             )
             return
@@ -35,7 +39,7 @@ async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     bloggers = await get_bloggers_for_manager(user["id"])
     if not bloggers:
-        await update.message.reply_text(
+        await eff_msg.reply_text(
             "Нет блогеров." if lang == "ru" else "No bloggers."
         )
         return

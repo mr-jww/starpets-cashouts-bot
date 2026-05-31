@@ -128,7 +128,7 @@ def _parse_smart_row(line: str) -> tuple[str, str, str, str, str] | None:
         else:
             name_parts.append(token)
 
-    name = " ".join(name_parts)
+    name = " ".join(name_parts).strip()
     return name, site, usdt, paypal, primary
 
 
@@ -387,7 +387,7 @@ async def _send_import_instructions(target, lang: str, cancel_kb):
 
 
 async def cmd_import_bloggers_from_callback(update, context):
-    """Entry point from inline button (settings screen)."""
+    """Entry point from inline button — sends instructions and activates WAIT_DATA state."""
     query = update.callback_query
     user = await get_user(update.effective_user.id)
     lang = get_lang(user) if user else "en"
@@ -397,6 +397,9 @@ async def cmd_import_bloggers_from_callback(update, context):
                              callback_data="ib_cancel")
     ]])
     await _send_import_instructions(query.message, lang, cancel_kb)
+    # Signal that we're in WAIT_DATA state (ConversationHandler picks up next message)
+    context.user_data["ib_active"] = True
+    return WAIT_DATA
 
 
 async def cmd_import_bloggers(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -469,11 +472,52 @@ async def _handle_parsed_text(text: str, update: Update, context: ContextTypes.D
         await update.effective_message.reply_text("\n".join(lines), reply_markup=_nav_kb(_lang))
         return ConversationHandler.END
 
-    # Build plan
-    changes = await build_plan(valid, user["id"])
-    context.user_data["ib_changes"] = changes
+    # Ask import mode first
+    context.user_data["ib_valid"]   = [pr.row.__dict__ for pr in valid]
     context.user_data["ib_invalid"] = invalid
     context.user_data["ib_user"]    = user
+
+    new_count = 0
+    for pr in valid:
+        existing = await get_blogger_by_name(pr.row.name, user["id"])
+        if not existing:
+            new_count += 1
+    existing_count = len(valid) - new_count
+
+    if lang == "ru":
+        text = (
+            f"Найдено строк: {len(valid)} (+{new_count} новых, {existing_count} уже в базе)\n\n"
+            f"Выбери режим импорта:"
+        )
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(
+                f"➕ Только новые ({new_count})",
+                callback_data="ib_mode:new_only"
+            )],
+            [InlineKeyboardButton(
+                f"🔄 Полный импорт ({len(valid)})",
+                callback_data="ib_mode:full"
+            )],
+            [InlineKeyboardButton("✕ Отмена", callback_data="ib_cancel")],
+        ])
+    else:
+        text = (
+            f"Found rows: {len(valid)} (+{new_count} new, {existing_count} already in DB)\n\n"
+            f"Select import mode:"
+        )
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(
+                f"➕ New only ({new_count})",
+                callback_data="ib_mode:new_only"
+            )],
+            [InlineKeyboardButton(
+                f"🔄 Full import ({len(valid)})",
+                callback_data="ib_mode:full"
+            )],
+            [InlineKeyboardButton("✕ Cancel", callback_data="ib_cancel")],
+        ])
+    await update.effective_message.reply_text(text, reply_markup=kb)
+    return WAIT_CONFIRM
 
     suspicious = is_suspicious(changes)
     plan_text  = format_plan_summary(changes, lang)
@@ -588,9 +632,97 @@ async def import_got_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --------------------------------------------------------------------------- #
 # Confirmation callbacks
 # --------------------------------------------------------------------------- #
+async def cb_ib_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle import mode selection: new_only or full."""
+    query = update.callback_query
+    await query.answer()
+    user = context.user_data.get("ib_user") or await get_user(update.effective_user.id)
+    lang = get_lang(user) if user else "en"
+
+    mode = query.data.split(":")[1]  # "new_only" or "full"
+    raw_valid = context.user_data.get("ib_valid", [])
+    invalid   = context.user_data.get("ib_invalid", [])
+
+    # Reconstruct ImportRow objects
+    valid_rows = []
+    for d in raw_valid:
+        row = ImportRow(**d)
+        if mode == "new_only":
+            existing = await get_blogger_by_name(row.name, user["id"])
+            if existing:
+                continue  # skip existing bloggers silently
+        valid_rows.append(ParsedRow(row))
+
+    if not valid_rows:
+        await query.edit_message_text(
+            "Нет новых блогеров для добавления." if lang == "ru"
+            else "No new bloggers to add."
+        )
+        return ConversationHandler.END
+
+    # Build plan
+    changes = await build_plan(valid_rows, user["id"])
+    context.user_data["ib_changes"] = changes
+
+    suspicious = is_suspicious(changes) and mode == "full"
+    plan_text  = format_plan_summary(changes, lang)
+
+    skip_text = ""
+    if invalid:
+        skip_lines = ["\nПропускаются:" if lang == "ru" else "\nSkipped:"]
+        for pr in invalid:
+            skip_lines.append(f"  ✗ {pr.row.name}: {pr.error}")
+        skip_text = "\n".join(skip_lines)
+
+    if suspicious:
+        existing    = [c for c in changes if not c.is_new]
+        changed_cnt = sum(1 for c in existing if c.primary_changed)
+        pct         = int(changed_cnt / len(existing) * 100) if existing else 0
+        if lang == "ru":
+            warn = (
+                f"⚠️ У {changed_cnt} из {len(existing)} уже существующих блогеров "
+                f"основной метод оплаты изменится ({pct}%). "
+                f"Это выше нормы – перепроверь перед тем как продолжить.\n\n"
+            )
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✓ Всё верно, применить", callback_data="ib_confirm")],
+                [InlineKeyboardButton("✗ Отмена", callback_data="ib_cancel")],
+            ])
+        else:
+            warn = (
+                f"⚠️ {changed_cnt} out of {len(existing)} existing bloggers "
+                f"would have their primary method changed ({pct}%). "
+                f"Please double-check before continuing.\n\n"
+            )
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✓ Looks correct, apply", callback_data="ib_confirm")],
+                [InlineKeyboardButton("✗ Cancel", callback_data="ib_cancel")],
+            ])
+        await _send_chunked(query.message, warn + plan_text + skip_text, kb)
+        return WAIT_CONFIRM
+
+    if lang == "ru":
+        mode_label = "только новые" if mode == "new_only" else "полный"
+        header = f"Готово к импорту ({mode_label}, {len(changes)} блогеров):\n\n"
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✓ Применить", callback_data="ib_confirm")],
+            [InlineKeyboardButton("✗ Отмена",    callback_data="ib_cancel")],
+        ])
+    else:
+        mode_label = "new only" if mode == "new_only" else "full"
+        header = f"Ready to import ({mode_label}, {len(changes)} bloggers):\n\n"
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✓ Apply",  callback_data="ib_confirm")],
+            [InlineKeyboardButton("✗ Cancel", callback_data="ib_cancel")],
+        ])
+    await _send_chunked(query.message, header + plan_text + skip_text, kb)
+    return WAIT_CONFIRM
+
+
 async def cb_ib_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    context.user_data["_last_action"] = "import_confirm"
     user    = context.user_data.get("ib_user") or await get_user(update.effective_user.id)
     lang    = get_lang(user) if user else "en"
     changes = context.user_data.get("ib_changes", [])
@@ -607,9 +739,10 @@ async def cb_ib_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     added, updated = await apply_changes(changes, user["id"], user)
 
     summary = format_final_result(added, updated, invalid, lang)
-    await query.message.reply_text(summary, reply_markup=nav_keyboard(lang))
+    await _send_chunked(query.message, summary, nav_keyboard(lang))
     context.user_data.pop("ib_changes", None)
     context.user_data.pop("ib_invalid", None)
+    context.user_data.pop("ib_valid", None)
     return ConversationHandler.END
 
 
@@ -648,10 +781,11 @@ def register_import_handlers(app):
     # Register globally so callbacks work from any message in the chain
     app.add_handler(CallbackQueryHandler(cb_ib_confirm, pattern=r"^ib_confirm$"))
     app.add_handler(CallbackQueryHandler(cb_ib_cancel,  pattern=r"^ib_cancel$"))
+    app.add_handler(CallbackQueryHandler(cb_ib_mode,    pattern=r"^ib_mode:"))
     app.add_handler(ConversationHandler(
         entry_points=[
             CommandHandler("import_bloggers", cmd_import_bloggers),
-            CallbackQueryHandler(lambda u, c: None, pattern=r"^go_import$"),
+            CallbackQueryHandler(cmd_import_bloggers_from_callback, pattern=r"^go_import$"),
         ],
         states={
             WAIT_DATA: [
@@ -670,6 +804,6 @@ def register_import_handlers(app):
             ],
         },
         fallbacks=[CommandHandler("cancel", cmd_cancel)],
-        conversation_timeout=300,
+        conversation_timeout=600,
         per_message=False,
     ))

@@ -8,10 +8,11 @@ venv/
 # Secrets
 .env
 
-# Data, backups, logs
+# Data, backups, logs, documentation
 data/
 backups/
 logs/
+docs/
 
 # OS
 .DS_Store

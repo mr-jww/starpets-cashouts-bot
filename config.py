@@ -18,3 +18,50 @@ if not ADMIN_ID:
 for _dir in [os.path.dirname(DB_PATH), BACKUP_DIR, LOG_DIR]:
     if _dir:
         os.makedirs(_dir, exist_ok=True)
+
+# Active managers with their passwords (sha256 hashed at startup)
+# Name -> plain password (stored as hash in DB on first login)
+ACTIVE_MANAGERS: dict[str, str] = {
+    "John":       "***REMOVED***",
+    "Alex":       "***REMOVED***",
+    "Rocky":      "***REMOVED***",
+    "Max":        "***REMOVED***",   # formerly MaxSP
+    "smazakxd":   "***REMOVED***",
+    "Swirl":      "***REMOVED***",
+    "Maison":     "***REMOVED***",
+    "Emilio":     "***REMOVED***",
+    "Nick":       "***REMOVED***",
+    "Jennifer":   "***REMOVED***",
+    "Marco":      "***REMOVED***",
+    "Ketty":      "***REMOVED***",
+    "Rina":       "***REMOVED***",
+    "Stacy":      "***REMOVED***",
+    "Antonio":    "***REMOVED***",
+    "Tony":       "***REMOVED***",
+    "Tom":        "***REMOVED***",
+    "Talon":      "***REMOVED***",
+    "Vanessa":    "***REMOVED***",
+    "Monty":      "***REMOVED***",
+    "Unfairbird": "***REMOVED***",
+    "Vojtěch":    "***REMOVED***",
+    "Seb":        "***REMOVED***",
+    "Annalice":   "***REMOVED***",
+    "Sergo":      "***REMOVED***",
+}
+
+# Display order for manager selection buttons (3 columns)
+MANAGER_BUTTON_ORDER = [
+    "John", "Alex", "Rocky",
+    "Max", "smazakxd", "Swirl",
+    "Maison", "Emilio", "Nick",
+    "Jennifer", "Marco", "Ketty",
+    "Rina", "Stacy", "Antonio",
+    "Tony", "Tom", "Talon",
+    "Vanessa", "Monty", "Unfairbird",
+    "Vojtěch", "Seb", "Annalice",
+    "Sergo",
+]
+
+# Google Sheets sync
+SHEETS_ID          = os.getenv("SHEETS_ID", "")
+SHEETS_CREDENTIALS = os.getenv("SHEETS_CREDENTIALS", "google_credentials.json")

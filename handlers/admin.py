@@ -23,6 +23,7 @@ from telegram.ext import (
 )
 
 from database.queries import (
+    reset_lockout, get_locked_users,
     get_all_users, get_all_bloggers, get_all_recent_payouts,
     get_recent_logs, search_bloggers_global, db_log,
     get_all_methods, METHOD_LABELS, get_user,
@@ -81,6 +82,8 @@ def _admin_main_kb(lang: str) -> InlineKeyboardMarkup:
                 InlineKeyboardButton("📥 Скачать БД",   callback_data="adm:dl_db"),
             ],
             [InlineKeyboardButton("♻️ Восстановить БД", callback_data="adm:restore_prompt")],
+            [InlineKeyboardButton("📊 Экспорт в xlsx",    callback_data="adm:export")],
+            [InlineKeyboardButton("🔄 Sync Google Sheets",   callback_data="adm:sync_sheets")],
         ])
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("👥 Users",               callback_data="adm:users")],
@@ -326,6 +329,25 @@ async def cb_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Enter blogger name to search across all data:",
             reply_markup=_back_kb(lang),
         )
+
+    # ---- SYNC SHEETS ----
+    elif action == "sync_sheets":
+        from handlers.sheets_handler import cmd_sync_sheets
+        # Redirect to sheets handler which shows mode selection
+        from telegram import Message
+        class _FakeUpdate:
+            effective_user = query.from_user
+            message = query.message
+            effective_chat = query.message.chat
+        fake = _FakeUpdate()
+        await cmd_sync_sheets(fake, context)
+        return
+
+    # ---- EXPORT ----
+    elif action == "export":
+        from handlers.export_xlsx import _do_export
+        await _do_export(update, context, lang)
+        return
 
     # ---- SEARCH RESULT ----
     elif action == "search":

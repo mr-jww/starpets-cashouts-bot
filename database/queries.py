@@ -11,6 +11,28 @@ from database.db import get_db
 
 async def upsert_user(telegram_id: int, username: str | None, role: str = "manager") -> dict:
     async with get_db() as db:
+        # Check if a placeholder account exists with matching username (manager name)
+        # Placeholder accounts have negative telegram_id
+        if username:
+            async with db.execute(
+                """SELECT id FROM users
+                   WHERE manager_filter = ? COLLATE NOCASE
+                   AND telegram_id < 0""",
+                (username,)
+            ) as cur:
+                placeholder = await cur.fetchone()
+            if placeholder:
+                # Upgrade placeholder to real account
+                await db.execute(
+                    "UPDATE users SET telegram_id = ?, username = ? WHERE id = ?",
+                    (telegram_id, username, placeholder["id"])
+                )
+                await db.commit()
+                async with db.execute(
+                    "SELECT * FROM users WHERE telegram_id = ?", (telegram_id,)
+                ) as cur:
+                    return dict(await cur.fetchone())
+
         await db.execute(
             """
             INSERT INTO users (telegram_id, username, role)
@@ -227,6 +249,12 @@ async def add_payment_method(
         if existing:
             existing = dict(existing)
             if existing["address"] != address or not existing["is_active"]:
+                # Save old address to history before overwriting
+                if existing["address"] and existing["address"] != address:
+                    await db.execute(
+                        "INSERT INTO payment_method_history (blogger_id, type, address) VALUES (?, ?, ?)",
+                        (blogger_id, method_type, existing["address"]),
+                    )
                 await db.execute(
                     "UPDATE payment_methods SET address = ?, is_active = 1 WHERE id = ?",
                     (address, existing["id"]),
@@ -303,6 +331,139 @@ async def set_primary_method(method_id: int, blogger_id: int) -> None:
 
 
 
+
+
+
+# --------------------------------------------------------------------------- #
+# MANAGER PASSWORDS & LOCKOUT
+# --------------------------------------------------------------------------- #
+
+import hashlib as _hashlib
+from datetime import datetime as _dt, timedelta as _td
+
+
+def _hash_pw(password: str) -> str:
+    return _hashlib.sha256(password.encode()).hexdigest()
+
+
+async def set_manager_password(telegram_id: int, password: str) -> None:
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE users SET mgr_password = ? WHERE telegram_id = ?",
+            (_hash_pw(password), telegram_id),
+        )
+        await db.commit()
+
+
+async def check_manager_password(telegram_id: int, password: str) -> str:
+    """
+    Returns: "ok" | "wrong" | "locked" | "no_password"
+    """
+    async with get_db() as db:
+        async with db.execute(
+            "SELECT mgr_password, failed_attempts, locked_until FROM users WHERE telegram_id = ?",
+            (telegram_id,),
+        ) as cur:
+            row = await cur.fetchone()
+    if not row:
+        return "wrong"
+    pw_hash, attempts, locked_until = row
+
+    # Check lockout
+    if locked_until:
+        lock_dt = _dt.fromisoformat(locked_until)
+        if _dt.utcnow() < lock_dt:
+            return "locked"
+        # Lockout expired — reset
+        async with get_db() as db:
+            await db.execute(
+                "UPDATE users SET failed_attempts = 0, locked_until = NULL WHERE telegram_id = ?",
+                (telegram_id,),
+            )
+            await db.commit()
+
+    if not pw_hash:
+        return "no_password"
+
+    if pw_hash == _hash_pw(password):
+        # Reset on success
+        async with get_db() as db:
+            await db.execute(
+                "UPDATE users SET failed_attempts = 0, locked_until = NULL WHERE telegram_id = ?",
+                (telegram_id,),
+            )
+            await db.commit()
+        return "ok"
+
+    # Wrong password
+    new_attempts = (attempts or 0) + 1
+    locked_until_val = None
+    if new_attempts >= 5:
+        locked_until_val = (_dt.utcnow() + _td(minutes=10)).isoformat()
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE users SET failed_attempts = ?, locked_until = ? WHERE telegram_id = ?",
+            (new_attempts, locked_until_val, telegram_id),
+        )
+        await db.commit()
+    return "locked" if locked_until_val else "wrong"
+
+
+async def reset_lockout(telegram_id: int) -> None:
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE users SET failed_attempts = 0, locked_until = NULL WHERE telegram_id = ?",
+            (telegram_id,),
+        )
+        await db.commit()
+
+
+async def get_locked_users() -> list[dict]:
+    async with get_db() as db:
+        async with db.execute(
+            """SELECT telegram_id, username, locked_until, failed_attempts
+               FROM users WHERE locked_until IS NOT NULL""",
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
+# --------------------------------------------------------------------------- #
+# PAYMENT METHOD HISTORY
+# --------------------------------------------------------------------------- #
+
+async def add_method_history(blogger_id: int, method_type: str, old_address: str) -> None:
+    """Save old address before it gets replaced."""
+    async with get_db() as db:
+        await db.execute(
+            "INSERT INTO payment_method_history (blogger_id, type, address) VALUES (?, ?, ?)",
+            (blogger_id, method_type, old_address),
+        )
+        await db.commit()
+
+
+async def get_method_history(blogger_id: int) -> list[dict]:
+    async with get_db() as db:
+        async with db.execute(
+            """SELECT type, address, replaced_at
+               FROM payment_method_history
+               WHERE blogger_id = ?
+               ORDER BY replaced_at""",
+            (blogger_id,),
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
+async def get_all_method_history() -> dict[int, list[dict]]:
+    """Returns {blogger_id: [history_rows]} for export."""
+    async with get_db() as db:
+        async with db.execute(
+            "SELECT blogger_id, type, address FROM payment_method_history ORDER BY replaced_at"
+        ) as cur:
+            rows = [dict(r) for r in await cur.fetchall()]
+    result: dict[int, list] = {}
+    for r in rows:
+        result.setdefault(r["blogger_id"], []).append(r)
+    return result
 
 
 async def set_filter_setting(telegram_id: int, field: str, value: int) -> None:
@@ -382,6 +543,17 @@ async def update_method_address(
     method_id: int, address: str, label: str | None = None
 ) -> None:
     async with get_db() as db:
+        # Save old address to history before overwriting
+        async with db.execute(
+            "SELECT blogger_id, type, address FROM payment_methods WHERE id = ?",
+            (method_id,)
+        ) as cur:
+            old = await cur.fetchone()
+        if old and old[2] and old[2] != address:
+            await db.execute(
+                "INSERT INTO payment_method_history (blogger_id, type, address) VALUES (?, ?, ?)",
+                (old[0], old[1], old[2])
+            )
         await db.execute(
             "UPDATE payment_methods SET address = ?, label = ? WHERE id = ?",
             (address, label, method_id),
@@ -442,6 +614,29 @@ async def get_payouts_for_blogger(blogger_id: int, limit: int = 0) -> list[dict]
             params.append(limit)
         async with db.execute(sql, params) as cur:
             return [dict(r) for r in await cur.fetchall()]
+
+
+async def get_recent_blogger_ids(manager_id: int, limit: int = 8) -> list[int]:
+    """Return IDs of bloggers paid most recently (unique, ordered by last payout)."""
+    async with get_db() as db:
+        async with db.execute(
+            """
+            SELECT DISTINCT blogger_id
+            FROM payouts
+            WHERE manager_id = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (manager_id, limit * 3),  # fetch more to dedupe
+        ) as cur:
+            rows = await cur.fetchall()
+    seen = []
+    for r in rows:
+        if r[0] not in seen:
+            seen.append(r[0])
+        if len(seen) >= limit:
+            break
+    return seen
 
 
 async def get_recent_payouts(manager_id: int, limit: int = 20) -> list[dict]:

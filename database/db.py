@@ -19,12 +19,15 @@ CREATE TABLE IF NOT EXISTS users (
     role        TEXT NOT NULL DEFAULT 'manager',
     lang        TEXT NOT NULL DEFAULT 'ru',
     manager_filter TEXT,
-    output_mode  TEXT NOT NULL DEFAULT 'block',
+    output_mode  TEXT NOT NULL DEFAULT 'text',
     default_fmt       TEXT NOT NULL DEFAULT 'oneline',
     include_paid      INTEGER NOT NULL DEFAULT 0,
     warn_paid         INTEGER NOT NULL DEFAULT 1,
     include_pending   INTEGER NOT NULL DEFAULT 0,
     warn_pending      INTEGER NOT NULL DEFAULT 1,
+    mgr_password      TEXT,
+    failed_attempts   INTEGER NOT NULL DEFAULT 0,
+    locked_until      TEXT,
     created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -83,12 +86,15 @@ async def init_db() -> None:
             ("is_primary", "INTEGER NOT NULL DEFAULT 0"),
             ("bloggers.is_active", "INTEGER NOT NULL DEFAULT 1"),
             ("manager_filter", "TEXT"),
-            ("output_mode",  "TEXT NOT NULL DEFAULT 'block'"),
+            ("output_mode",  "TEXT NOT NULL DEFAULT 'text'"),
             ("default_fmt",       "TEXT NOT NULL DEFAULT 'oneline'"),
             ("include_paid",     "INTEGER NOT NULL DEFAULT 0"),
             ("warn_paid",         "INTEGER NOT NULL DEFAULT 1"),
             ("include_pending",   "INTEGER NOT NULL DEFAULT 0"),
             ("warn_pending",      "INTEGER NOT NULL DEFAULT 1"),
+            ("mgr_password",      "TEXT"),
+            ("failed_attempts",   "INTEGER NOT NULL DEFAULT 0"),
+            ("locked_until",      "TEXT"),
         ]:
             try:
                 if col == "is_primary":
@@ -100,13 +106,17 @@ async def init_db() -> None:
                     await db.execute(f"ALTER TABLE users ADD COLUMN {col} {definition}")
                     # Set default for existing rows
                     if col == "output_mode":
-                        await db.execute("UPDATE users SET output_mode = 'block' WHERE output_mode IS NULL")
+                        await db.execute("UPDATE users SET output_mode = 'text' WHERE output_mode IS NULL")
                     elif col == "default_fmt":
                         await db.execute("UPDATE users SET default_fmt = 'oneline' WHERE default_fmt IS NULL")
                     elif col in ("include_paid", "include_pending"):
                         await db.execute(f"UPDATE users SET {col} = 0 WHERE {col} IS NULL")
                     elif col in ("warn_paid", "warn_pending"):
                         await db.execute(f"UPDATE users SET {col} = 1 WHERE {col} IS NULL")
+                    elif col in ("mgr_password", "locked_until"):
+                        pass  # NULL default is fine
+                    elif col == "failed_attempts":
+                        await db.execute("UPDATE users SET failed_attempts = 0 WHERE failed_attempts IS NULL")
             except Exception:
                 pass  # Column already exists
         await db.commit()
