@@ -32,7 +32,7 @@ from database.queries import (
     add_payment_method, set_primary_method,
 )
 from services.parser import parse_rows, BloggerResult
-from services.formatter import format_oneline, format_multiline
+from services.formatter import format_oneline, format_multiline, both_formats, payout_warning
 from services.logger import log_info
 from handlers.common import get_user_or_reject, get_lang
 
@@ -99,10 +99,20 @@ async def _send_payout_block(
     if edit:
         await target.edit_message_text(msg_text, reply_markup=keyboard, parse_mode=parse_mode)
     elif reply_to:
-        await reply_to.reply_text(msg_text, reply_markup=keyboard, parse_mode=parse_mode)
+        sent = await reply_to.reply_text(msg_text, reply_markup=keyboard, parse_mode=parse_mode)
     else:
         eff = getattr(target, "effective_message", None) or getattr(target, "message", None) or target
-        await eff.reply_text(msg_text, reply_markup=keyboard, parse_mode=parse_mode)
+        sent = await eff.reply_text(msg_text, reply_markup=keyboard, parse_mode=parse_mode)
+
+    # Warning if below minimum payout threshold
+    if not edit:
+        warning = payout_warning(method_type, result.total_price_display, lang)
+        if warning:
+            eff_w = getattr(target, "effective_message", None) or getattr(target, "message", None) or target
+            try:
+                await eff_w.reply_text(warning)
+            except Exception:
+                pass
 
 
 def _storage_key(name: str) -> str:
@@ -149,6 +159,9 @@ async def _send_error_summary(target, bloggers_with_errors: list[BloggerResult],
 # /payout entry
 # --------------------------------------------------------------------------- #
 async def cmd_payout(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Answer callback query if triggered from inline button
+    if update.callback_query:
+        await update.callback_query.answer()
     user = await get_user_or_reject(update)
     if not user:
         return ConversationHandler.END

@@ -41,6 +41,33 @@ def _footer(method_type: str, address: str, lang: str) -> str:
     return f"{_method_label(method_type, lang)} – {address}"
 
 
+
+_MIN_PAYOUT = {
+    "paypal":     50.0,
+    "usdt-trc20": 10.0,
+}
+
+
+def payout_warning(method_type: str, amount_str: str, lang: str) -> str:
+    """Return warning string if amount is below minimum, else empty string."""
+    minimum = _MIN_PAYOUT.get(method_type)
+    if not minimum:
+        return ""
+    # Parse amount like "$12,3" or "$12.3"
+    try:
+        clean = amount_str.lstrip("$").replace(",", ".").strip()
+        amount = float(clean)
+    except (ValueError, AttributeError):
+        return ""
+    if amount < minimum:
+        label = "PayPal" if method_type == "paypal" else "USDT-TRC20"
+        if lang == "ru":
+            return f"⚠️ Минимальная выплата {label}: ${minimum:.0f} (сейчас ${amount:.1f})"
+        else:
+            return f"⚠️ Minimum payout for {label}: ${minimum:.0f} (current ${amount:.1f})"
+    return ""
+
+
 def format_oneline(
     result: BloggerResult,
     method_type: str,
