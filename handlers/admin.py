@@ -249,6 +249,7 @@ async def cb_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         fname   = os.path.basename(log_path)
         with open(log_path, "rb") as f:
             await query.message.reply_document(
+                read_timeout=120, write_timeout=120,
                 document=f,
                 filename=fname,
                 caption=f"Лог за текущий месяц · {size_kb} KB" if lang == "ru"
@@ -268,6 +269,7 @@ async def cb_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         fname   = f"starpets_{ts}.db"
         with open(DB_PATH, "rb") as f:
             await query.message.reply_document(
+                read_timeout=120, write_timeout=120,
                 document=f,
                 filename=fname,
                 caption=f"База данных · {size_kb} KB" if lang == "ru"
@@ -293,6 +295,7 @@ async def cb_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
                  file=os.path.basename(backup_file), size=f"{size_kb}kb")
         with open(backup_file, "rb") as f:
             await query.message.reply_document(
+                read_timeout=120, write_timeout=120,
                 document=f,
                 filename=os.path.basename(backup_file),
                 caption=f"Бэкап · {size_kb} KB" if lang == "ru" else f"Backup · {size_kb} KB",
@@ -468,6 +471,7 @@ async def cmd_backup(update: Update, context: ContextTypes.DEFAULT_TYPE):
              file=os.path.basename(backup_file), size=f"{size_kb}kb")
     with open(backup_file, "rb") as f:
         await update.message.reply_document(
+            read_timeout=120, write_timeout=120,
             document=f,
             filename=os.path.basename(backup_file),
             caption=f"Бэкап · {size_kb} KB" if lang == "ru" else f"Backup · {size_kb} KB",
