@@ -14,7 +14,7 @@ from database.queries import (upsert_user, get_user, set_user_lang, set_manager_
     set_manager_password, check_manager_password, reset_lockout, get_locked_users)
 from services.logger import log_info
 from handlers.common import get_user_or_reject, get_lang
-from config import ADMIN_ID, ACTIVE_MANAGERS, MANAGER_BUTTON_ORDER
+from config import ADMIN_ID, TEAM_PASSWORD, MANAGER_BUTTON_ORDER
 
 # States for /reformat conversation
 WAIT_REFORMAT = 0
@@ -168,6 +168,7 @@ async def cb_show_more(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔄 Переформат",     callback_data="rf_again")],
             [InlineKeyboardButton("📥 Импорт блогеров", callback_data="go_import")],
+            [InlineKeyboardButton("🔄 Синхр. с таблицей", callback_data="sync_my_sheet")],
             [InlineKeyboardButton("← Назад",           callback_data="show_start")],
         ])
     else:
@@ -175,9 +176,90 @@ async def cb_show_more(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔄 Reformat",        callback_data="rf_again")],
             [InlineKeyboardButton("📥 Import bloggers", callback_data="go_import")],
+            [InlineKeyboardButton("🔄 Sync with sheet", callback_data="sync_my_sheet")],
             [InlineKeyboardButton("← Back",             callback_data="show_start")],
         ])
     await query.edit_message_text(text, reply_markup=kb)
+
+
+
+async def cb_sync_my_sheet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show sync mode selection."""
+    query = update.callback_query
+    await query.answer()
+    user = await get_user(update.effective_user.id)
+    lang = get_lang(user) if user else "en"
+    mgr_name = user.get("manager_filter") if user else None
+
+    if not mgr_name:
+        await query.edit_message_text(
+            "Сначала выбери своё имя в настройках." if lang == "ru"
+            else "Set your manager name in settings first.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("← Назад" if lang == "ru" else "← Back",
+                                     callback_data="show_more")
+            ]])
+        )
+        return
+
+    if lang == "ru":
+        text = f"Синхронизация листа \u00ab{mgr_name}\u00bb.\nВыбери режим:"
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("➕ Только новые", callback_data="sync_sheet:new_only")],
+            [InlineKeyboardButton("🔄 Полная синхронизация", callback_data="sync_sheet:full")],
+            [InlineKeyboardButton("← Назад", callback_data="show_more")],
+        ])
+    else:
+        text = f"Sync sheet \u00ab{mgr_name}\u00bb.\nChoose mode:"
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("➕ New only", callback_data="sync_sheet:new_only")],
+            [InlineKeyboardButton("🔄 Full sync", callback_data="sync_sheet:full")],
+            [InlineKeyboardButton("← Back", callback_data="show_more")],
+        ])
+    await query.edit_message_text(text, reply_markup=kb)
+
+
+async def cb_sync_sheet_run(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Run the actual sheet sync."""
+    query = update.callback_query
+    await query.answer()
+    user = await get_user(update.effective_user.id)
+    lang = get_lang(user) if user else "en"
+    mode = query.data.split(":")[1]
+    mgr_name = user.get("manager_filter") if user else None
+
+    from services.sheets_sync import read_sheets, sync_sheets_to_db, HAS_GSPREAD, SPREADSHEET_ID
+    if not HAS_GSPREAD or not SPREADSHEET_ID:
+        await query.edit_message_text(
+            "Google Sheets не настроен." if lang == "ru"
+            else "Google Sheets is not configured."
+        )
+        return
+
+    await query.edit_message_text(
+        f"Читаю лист «{mgr_name}»..." if lang == "ru"
+        else f"Reading sheet «{mgr_name}»..."
+    )
+
+    try:
+        sheets_data = read_sheets(sheet_names=[mgr_name])
+        rows = sheets_data.get(mgr_name, [])
+        if not rows:
+            await query.message.reply_text(
+                f"Лист «{mgr_name}» пуст или не найден." if lang == "ru"
+                else f"Sheet «{mgr_name}» is empty or not found."
+            )
+        else:
+            result = await sync_sheets_to_db(mgr_name, rows, user["id"], mode=mode)
+            if lang == "ru":
+                text = f"Готово: добавлено {len(result.added)}, ошибок {len(result.errors)}."
+            else:
+                text = f"Done: added {len(result.added)}, errors {len(result.errors)}."
+            await query.message.reply_text(text)
+    except Exception as e:
+        await query.message.reply_text(
+            f"Ошибка: {e}" if lang == "ru" else f"Error: {e}"
+        )
 
 
 async def cb_show_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -342,7 +424,7 @@ async def cb_set_mgr(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cb_mgr_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Manager selected from button — ask for password."""
+    """Manager selected from button."""
     query = update.callback_query
     await query.answer()
     user = await get_user(update.effective_user.id)
@@ -362,18 +444,33 @@ async def cb_mgr_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = query.data.split(":", 1)[1]
     context.user_data["mgr_pending_name"] = name
     context.user_data["awaiting_mgr_msg_id"] = query.message.message_id
+
+    # If already confirmed team password once — skip for all future name selections
+    if user and user.get("mgr_password"):
+        await _apply_mgr_name(update, context, name, lang)
+        return
+    # Also skip if confirmed in this session
+    if context.user_data.get("team_confirmed"):
+        await _apply_mgr_name(update, context, name, lang)
+        return
+
+    # If no team password set — skip confirmation entirely
+    if not TEAM_PASSWORD:
+        await _apply_mgr_name(update, context, name, lang)
+        return
+
     context.user_data["awaiting_mgr_pw"] = True
 
     if lang == "ru":
         await query.edit_message_text(
-            f"Выбрано: {name}\n\nВведи пароль (6 цифр):\n/cancel — отмена",
+            f"Выбрано: {name}\n\nВведи командный пароль:",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("← Назад", callback_data="set_mgr")
             ]])
         )
     else:
         await query.edit_message_text(
-            f"Selected: {name}\n\nEnter password (6 digits):\n/cancel — cancel",
+            f"Selected: {name}\n\nEnter team password:",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("← Back", callback_data="set_mgr")
             ]])
@@ -449,14 +546,15 @@ async def handle_mgr_pw_input(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception:
         pass
 
-    # Check if name matches an active manager
-    expected_pw = ACTIVE_MANAGERS.get(name)
-    if not expected_pw:
-        # Unknown manager name — no password needed, just set
+    # No team password set — skip confirmation
+    if not TEAM_PASSWORD:
         await _apply_mgr_name(update, context, name, lang)
         return True
 
-    if pw == expected_pw:
+    if pw == TEAM_PASSWORD:
+        from database.queries import set_manager_password
+        await set_manager_password(update.effective_user.id, "confirmed")
+        context.user_data["team_confirmed"] = True
         await _apply_mgr_name(update, context, name, lang)
         return True
 
@@ -742,6 +840,10 @@ async def cb_rf_again(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     user = await get_user(update.effective_user.id)
     lang = get_lang(user) if user else "en"
+    # Clear any active blogger input state
+    for k in ("bm_action", "bm_msg_id", "bm_blogger_id", "bm_user_id",
+              "awaiting_mgr", "awaiting_mgr_pw", "ib_user"):
+        context.user_data.pop(k, None)
     context.user_data["rf_user"] = user
     await query.message.reply_text(
         "Вставьте блок для переформатирования:\n/cancel — отмена"
@@ -856,6 +958,42 @@ def _split_payout_items(items_raw: str) -> list[str]:
     return items
 
 
+
+_RF_TRANSLATE = {
+    # RU → EN
+    "за":      {"ru": "за",     "en": "for"},
+    "видео":   {"ru": "видео",  "en": "video"},
+    "по":      {"ru": "по",     "en": "for"},
+    "пр.":     {"ru": "пр.",    "en": "views"},
+    "для":     {"ru": "для",    "en": "for"},
+}
+
+def _translate_rf_block(text: str, target_lang: str) -> str:
+    """Translate payout block header between ru/en."""
+    import re
+    result = text
+
+    if target_lang == "en":
+        # $X для NAME за N видео по GAME: → $X for NAME for N video for GAME:
+        result = re.sub(
+            r"\$([\d,\.]+) для ([^з]+) за (\d+) (видео|вид\.) по ([^:]+):",
+            lambda m: f"${m.group(1)} for {m.group(2).strip()} for {m.group(3)} video for {m.group(5).strip()}:",
+            result
+        )
+        # N пр. → N views
+        result = re.sub(r"(\d[\d\s]*) пр\.", lambda m: f"{m.group(1).strip()} views", result)
+    else:  # ru
+        # $X for NAME for N video for GAME: → $X для NAME за N видео по GAME:
+        result = re.sub(
+            r"\$([\d,\.]+) for ([^f]+) for (\d+) video for ([^:]+):",
+            lambda m: f"${m.group(1)} для {m.group(2).strip()} за {m.group(3)} видео по {m.group(4).strip()}:",
+            result
+        )
+        # N views → N пр.
+        result = re.sub(r"(\d[\d\s]*) views", lambda m: f"{m.group(1).strip()} пр.", result)
+    return result
+
+
 async def reformat_got_block(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = context.user_data.get("rf_user") or await get_user(update.effective_user.id)
     lang = get_lang(user) if user else "en"
@@ -907,27 +1045,81 @@ async def reformat_got_block(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     user = context.user_data.get("rf_user") or await get_user(update.effective_user.id)
     output_mode = (user.get("output_mode") or "block") if user else "block"
-    context.user_data["rf_oneline"]   = oneline
-    context.user_data["rf_multiline"] = multiline
-    context.user_data["rf_fmt"]       = "oneline"
-    context.user_data["rf_output_mode"] = output_mode
+    # Build alternate-language versions
+    alt_lang = "en" if lang == "ru" else "ru"
+    oneline_alt   = _translate_rf_block(oneline, alt_lang)
+    multiline_alt = _translate_rf_block(multiline, alt_lang)
 
-    await _send_rf_block(update.message, oneline, "oneline", lang)
+    context.user_data["rf_oneline"]       = oneline
+    context.user_data["rf_multiline"]     = multiline
+    context.user_data["rf_oneline_alt"]   = oneline_alt
+    context.user_data["rf_multiline_alt"] = multiline_alt
+    context.user_data["rf_fmt"]           = "oneline"
+    context.user_data["rf_lang"]          = lang
+    context.user_data["rf_output_mode"]   = output_mode
+
+    context.user_data["_rf_just_done"] = True
+    await _send_rf_block(update.message, oneline, "oneline", lang, output_mode=output_mode)
     return ConversationHandler.END
 
 
-async def _send_rf_block(target, text: str, fmt: str, lang: str, edit: bool = False):
-    escaped = text.replace("`", "'")
-    msg = f"```\n{escaped}\n```"
-    toggle = ("↕ Многострочный" if fmt == "oneline" else "↕ Однострочный") if lang == "ru" \
-             else ("↕ Multiline" if fmt == "oneline" else "↕ One line")
+async def _send_rf_block(target, text: str, fmt: str, lang: str, edit: bool = False,
+                          output_mode: str = "text", show_lang_toggle: bool = True):
+    toggle_fmt = ("↕ Многострочный" if fmt == "oneline" else "↕ Однострочный") if lang == "ru" \
+                 else ("↕ Multiline" if fmt == "oneline" else "↕ One line")
+    _other_lang = "en" if lang == "ru" else "ru"
+    lang_btn = InlineKeyboardButton(
+        "🇬🇧 EN" if _other_lang == "en" else "🇷🇺 RU",
+        callback_data=f"rf_lang:{_other_lang}"
+    )
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton(toggle, callback_data=f"rf_toggle:{fmt}"),
+        InlineKeyboardButton(toggle_fmt, callback_data=f"rf_toggle:{fmt}"),
+        lang_btn,
     ]])
-    if edit:
-        await target.edit_message_text(msg, reply_markup=keyboard, parse_mode="Markdown")
+    if output_mode == "block":
+        escaped = text.replace("`", "'")
+        msg = f"```\n{escaped}\n```"
+        parse_mode = "Markdown"
     else:
-        await target.reply_text(msg, reply_markup=keyboard, parse_mode="Markdown")
+        msg = text
+        parse_mode = None
+    if edit:
+        await target.edit_message_text(msg, reply_markup=keyboard, parse_mode=parse_mode)
+    else:
+        await target.reply_text(msg, reply_markup=keyboard, parse_mode=parse_mode)
+
+
+
+async def cb_rf_lang(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Switch payout block language."""
+    query = update.callback_query
+    await query.answer()
+    target_lang = query.data.split(":")[1]
+    fmt = context.user_data.get("rf_fmt", "oneline")
+    output_mode = context.user_data.get("rf_output_mode", "text")
+
+    if fmt == "oneline":
+        key = "rf_oneline" if target_lang == context.user_data.get("rf_lang") else "rf_oneline_alt"
+    else:
+        key = "rf_multiline" if target_lang == context.user_data.get("rf_lang") else "rf_multiline_alt"
+
+    # Swap: if switching to alt, use alt keys; update rf_lang
+    if target_lang != context.user_data.get("rf_lang"):
+        # Swap main and alt
+        context.user_data["rf_oneline"],   context.user_data["rf_oneline_alt"]   = \
+            context.user_data.get("rf_oneline_alt", ""), context.user_data.get("rf_oneline", "")
+        context.user_data["rf_multiline"], context.user_data["rf_multiline_alt"] = \
+            context.user_data.get("rf_multiline_alt", ""), context.user_data.get("rf_multiline", "")
+        context.user_data["rf_lang"] = target_lang
+
+    text = context.user_data.get(
+        "rf_multiline" if fmt == "multiline" else "rf_oneline", ""
+    )
+    if not text:
+        await query.answer("Data expired." if target_lang == "en" else "Данные устарели.", show_alert=True)
+        return
+
+    await _send_rf_block(query, text, fmt, target_lang, edit=True, output_mode=output_mode)
 
 
 async def cb_rf_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -947,7 +1139,9 @@ async def cb_rf_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     context.user_data["rf_fmt"] = new_fmt
-    await _send_rf_block(query, text, new_fmt, lang, edit=True)
+    output_mode = context.user_data.get("rf_output_mode", "text")
+    current_lang = context.user_data.get("rf_lang", lang)
+    await _send_rf_block(query, text, new_fmt, current_lang, edit=True, output_mode=output_mode)
 
 
 # --------------------------------------------------------------------------- #
@@ -985,6 +1179,23 @@ async def fallback_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Don't interfere with active import conversation
     if context.user_data.get("ib_user") is not None:
         return
+
+    # Skip if reformat just completed (PTB re-dispatches to group 1)
+    if context.user_data.pop("_rf_just_done", False):
+        return
+
+    # Password input for manager selection
+    if context.user_data.get("awaiting_mgr_pw"):
+        text = (update.message.text or "").strip()
+        _nav = {"🏠 Home", "🏠 Главная", "💸 Payout", "💸 Выплата",
+                "👥 Bloggers", "👥 Блогеры", "⚙️ Settings", "⚙️ Настройки"}
+        if text in _nav or any(text.startswith(e) for e in ("🏠", "💸", "👥", "⚙️")):
+            context.user_data.pop("awaiting_mgr_pw", None)
+        else:
+            handled = await handle_mgr_pw_input(update, context)
+            if handled:
+                return
+
     # Don't interfere with active blogger menu text input
     if context.user_data.get("bm_action"):
         # Nav button pressed during text input — let handle_text_input in group 2 handle it
@@ -1072,7 +1283,16 @@ def register_start_handlers(app):
                 MessageHandler(filters.TEXT & ~filters.COMMAND, reformat_got_block),
             ],
         },
-        fallbacks=[CommandHandler("cancel", cmd_cancel_start)],
+        fallbacks=[
+            CommandHandler("cancel",          cmd_cancel_start),
+            CommandHandler("payout",           _universal_cancel),
+            CommandHandler("bloggers",          _universal_cancel),
+            CommandHandler("start",             _universal_cancel),
+            CommandHandler("help",              _universal_cancel),
+            CommandHandler("settings",          _universal_cancel),
+            CommandHandler("import_bloggers",   _universal_cancel),
+            MessageHandler(filters.Regex(r"^(🏠|💸|👥|⚙️)"), _universal_cancel),
+        ],
         conversation_timeout=300,
     ))
 
@@ -1081,6 +1301,8 @@ def register_start_handlers(app):
     app.add_handler(CallbackQueryHandler(cb_show_admin_hint, pattern=r"^show_admin_hint$"))
     app.add_handler(CallbackQueryHandler(cb_show_start,      pattern=r"^show_start$"))
     app.add_handler(CallbackQueryHandler(cb_show_more,        pattern=r"^show_more$"))
+    app.add_handler(CallbackQueryHandler(cb_sync_my_sheet,   pattern=r"^sync_my_sheet$"))
+    app.add_handler(CallbackQueryHandler(cb_sync_sheet_run,   pattern=r"^sync_sheet:"))
     app.add_handler(CallbackQueryHandler(cb_set_lang,        pattern=r"^set_lang:"))
     app.add_handler(CallbackQueryHandler(cb_set_mgr,             pattern=r"^set_mgr$"))
     app.add_handler(CallbackQueryHandler(cb_toggle_output_mode,  pattern=r"^toggle_output_mode$"))
@@ -1089,6 +1311,7 @@ def register_start_handlers(app):
     app.add_handler(CallbackQueryHandler(cb_mgr_clear,    pattern=r"^mgr_clear$"))
     app.add_handler(CallbackQueryHandler(cb_mgr_pick,     pattern=r"^mgr_pick:"))
     app.add_handler(CallbackQueryHandler(cb_mgr_manual,   pattern=r"^mgr_manual$"))
+    app.add_handler(CallbackQueryHandler(cb_rf_lang,    pattern=r"^rf_lang:"))
     app.add_handler(CallbackQueryHandler(cb_rf_toggle,       pattern=r"^rf_toggle:"))
 
     # Manager name input (outside conversation, triggered by awaiting_mgr flag)

@@ -19,35 +19,9 @@ for _dir in [os.path.dirname(DB_PATH), BACKUP_DIR, LOG_DIR]:
     if _dir:
         os.makedirs(_dir, exist_ok=True)
 
-# Active managers with their passwords (sha256 hashed at startup)
-# Name -> plain password (stored as hash in DB on first login)
-ACTIVE_MANAGERS: dict[str, str] = {
-    "John":       "***REMOVED***",
-    "Alex":       "***REMOVED***",
-    "Rocky":      "***REMOVED***",
-    "Max":        "***REMOVED***",   # formerly MaxSP
-    "smazakxd":   "***REMOVED***",
-    "Swirl":      "***REMOVED***",
-    "Maison":     "***REMOVED***",
-    "Emilio":     "***REMOVED***",
-    "Nick":       "***REMOVED***",
-    "Jennifer":   "***REMOVED***",
-    "Marco":      "***REMOVED***",
-    "Ketty":      "***REMOVED***",
-    "Rina":       "***REMOVED***",
-    "Stacy":      "***REMOVED***",
-    "Antonio":    "***REMOVED***",
-    "Tony":       "***REMOVED***",
-    "Tom":        "***REMOVED***",
-    "Talon":      "***REMOVED***",
-    "Vanessa":    "***REMOVED***",
-    "Monty":      "***REMOVED***",
-    "Unfairbird": "***REMOVED***",
-    "Vojtěch":    "***REMOVED***",
-    "Seb":        "***REMOVED***",
-    "Annalice":   "***REMOVED***",
-    "Sergo":      "***REMOVED***",
-}
+# Single team password — required once per account to confirm identity
+# Set in .env as TEAM_PASSWORD
+TEAM_PASSWORD: str = os.getenv("TEAM_PASSWORD", "")
 
 # Display order for manager selection buttons (3 columns)
 MANAGER_BUTTON_ORDER = [
