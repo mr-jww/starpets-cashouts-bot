@@ -30,6 +30,8 @@ from database.queries import (
     get_primary_method, db_log,
 )
 from services.logger import log_info
+from handlers.start import _universal_cancel
+from handlers.start import _universal_cancel
 from handlers.common import get_user_or_reject, get_lang, nav_keyboard
 
 WAIT_DATA = 0
@@ -466,10 +468,9 @@ async def _handle_parsed_text(text: str, update: Update, context: ContextTypes.D
             InlineKeyboardButton("✕ Отмена" if lang == "ru" else "✕ Cancel",
                                  callback_data="ib_cancel")
         ]])
-        from handlers.common import nav_keyboard as _nav_kb
         _user = context.user_data.get("ib_user")
         _lang = get_lang(_user) if _user else "en"
-        await update.effective_message.reply_text("\n".join(lines), reply_markup=_nav_kb(_lang))
+        await update.effective_message.reply_text("\n".join(lines), reply_markup=nav_keyboard(_lang))
         return ConversationHandler.END
 
     # Ask import mode first
@@ -803,7 +804,15 @@ def register_import_handlers(app):
                 CallbackQueryHandler(cb_ib_cancel,  pattern=r"^ib_cancel$"),
             ],
         },
-        fallbacks=[CommandHandler("cancel", cmd_cancel)],
+        fallbacks=[
+            CommandHandler("cancel",         cmd_cancel),
+            CommandHandler("start",           _universal_cancel),
+            CommandHandler("payout",           _universal_cancel),
+            CommandHandler("bloggers",         _universal_cancel),
+            CommandHandler("reformat",         _universal_cancel),
+            CommandHandler("settings",         _universal_cancel),
+            MessageHandler(filters.Regex(r"^(🏠|💸|👥|⚙️)"), _universal_cancel),
+        ],
         conversation_timeout=600,
         per_message=False,
     ))

@@ -66,6 +66,14 @@ CREATE TABLE IF NOT EXISTS payouts (
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS payment_method_history (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    blogger_id  INTEGER NOT NULL REFERENCES bloggers(id),
+    type        TEXT NOT NULL,
+    address     TEXT NOT NULL,
+    replaced_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS logs (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id     INTEGER REFERENCES users(id),

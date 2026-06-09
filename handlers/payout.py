@@ -35,6 +35,8 @@ from services.parser import parse_rows, BloggerResult
 from services.formatter import format_oneline, format_multiline, both_formats, payout_warning
 from services.logger import log_info
 from handlers.common import get_user_or_reject, get_lang
+from handlers.start import _universal_cancel
+import re
 
 WAIT_ROWS, WAIT_UNKNOWN, WAIT_QUICK_ADDRESS = range(3)
 CANCEL_TEXT = {"ru": "Отменено.", "en": "Cancelled."}
@@ -118,8 +120,6 @@ async def _send_payout_block(
 def _storage_key(name: str) -> str:
     return f"pd_{re.sub(r'[^a-zA-Z0-9_]', '_', name)}"
 
-
-import re
 
 
 
@@ -824,7 +824,15 @@ def register_payout_handlers(app):
                 MessageHandler(filters.TEXT & ~filters.COMMAND, quick_address_input),
             ],
         },
-        fallbacks=[CommandHandler("cancel", cmd_cancel)],
+        fallbacks=[
+            CommandHandler("cancel",         cmd_cancel),
+            CommandHandler("start",           _universal_cancel),
+            CommandHandler("bloggers",         _universal_cancel),
+            CommandHandler("reformat",         _universal_cancel),
+            CommandHandler("import_bloggers",  _universal_cancel),
+            CommandHandler("settings",         _universal_cancel),
+            MessageHandler(filters.Regex(r"^(🏠|💸|👥|⚙️)"), _universal_cancel),
+        ],
         conversation_timeout=600,
         per_message=False,
     ))

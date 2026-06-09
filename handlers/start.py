@@ -1166,11 +1166,11 @@ _NAV_CMDS = {"bloggers", "payout", "start", "help", "settings", "cancel",
 
 async def _universal_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Cancel any active conversation when user sends a command or nav button."""
-    # Clear all known conversation state keys
     for k in list(context.user_data.keys()):
         if k.startswith(("ib_", "rf_", "bm_", "qm_", "pd_", "awaiting_",
                          "mgr_", "known", "unknown", "skipped", "user",
-                         "payout_raw", "no_method_queue", "all_payout_texts")):
+                         "payout_raw", "no_method_queue", "all_payout_texts",
+                         "chm_", "_last", "_rf", "team_")):
             context.user_data.pop(k, None)
     return ConversationHandler.END
 
