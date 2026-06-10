@@ -976,8 +976,8 @@ def _translate_rf_block(text: str, target_lang: str) -> str:
     if target_lang == "en":
         # $X для NAME за N видео по GAME: → $X for NAME for N video for GAME:
         result = re.sub(
-            r"\$([\d,\.]+) для ([^з]+) за (\d+) (видео|вид\.) по ([^:]+):",
-            lambda m: f"${m.group(1)} for {m.group(2).strip()} for {m.group(3)} video for {m.group(5).strip()}:",
+            r"\$([\d,\.]+) для ([^з]+) за (\d+) (?:видео|вид\.) по ([^:]+):",
+            lambda m: f"${m.group(1)} for {m.group(2).strip()} for {m.group(3)} video for {m.group(4).strip()}:",
             result
         )
         # N пр. → N views

@@ -475,18 +475,68 @@ async def quick_address_input(update: Update, context: ContextTypes.DEFAULT_TYPE
         method = await add_payment_method(db_b["id"], method_type, address)
         await set_primary_method(method["id"], db_b["id"])
         type_label = METHOD_LABELS.get(method_type, method_type)
-        await update.message.reply_text(
-            f"Добавлено: {blogger_name} — {type_label}: {address}"
-            if lang == "ru" else
-            f"Added: {blogger_name} — {type_label}: {address}"
-        )
         log_info("QUICK_METHOD_ADDED", user_id=user["telegram_id"],
                  username=user["username"], blogger=blogger_name, type=method_type)
         await db_log(user["id"], "QUICK_METHOD_ADDED",
                      f"blogger={blogger_name} | type={method_type}")
 
-    # Resume processing
-    return await _process_known(update, context)
+        # Send payout block only for this blogger
+        output_mode = _get_output_mode(user)
+        default_fmt = user.get("default_fmt") or "oneline"
+        known: list = context.user_data.get("known", [])
+        for blogger_result, db_blogger in known:
+            if db_blogger["id"] == db_b["id"]:
+                key = _storage_key(blogger_name)
+                context.user_data[key] = {
+                    "result": blogger_result, "method_type": method_type,
+                    "address": address, "method_id": method["id"],
+                    "db_blogger": db_blogger, "fmt": default_fmt,
+                    "output_mode": output_mode,
+                }
+                await _send_payout_block(
+                    update.message, blogger_result, method_type, address,
+                    method["id"], key, default_fmt, lang, output_mode,
+                )
+                games_str = ", ".join(blogger_result.games)
+                await save_payout(
+                    blogger_id=db_blogger["id"], manager_id=user["id"],
+                    amount_raw=blogger_result.total_price_display,
+                    method_id=method["id"], videos_count=blogger_result.video_count,
+                    game=games_str, mode=blogger_result.mode,
+                    raw_input=context.user_data.get("payout_raw", ""),
+                    formatted_text=format_oneline(blogger_result, method_type, address, lang),
+                )
+                log_info("PAYOUT_CREATED", user_id=user["telegram_id"],
+                         username=user["username"], blogger=blogger_name,
+                         amount=blogger_result.total_price_display, method=method_type)
+                break
+
+    # Show next in no_method queue or finish
+    queue = context.user_data.get("no_method_queue", [])
+    if queue:
+        next_name, next_id = queue.pop(0)
+        context.user_data["no_method_queue"] = queue
+        context.user_data["qm_blogger"] = next_name
+        known2: list = context.user_data.get("known", [])
+        next_result = next((br for br, db in known2 if db["id"] == next_id), None)
+        if next_result:
+            if lang == "ru":
+                text = f"Нет метода оплаты для {next_name}. Добавить сейчас?"
+            else:
+                text = f"No payment method for {next_name}. Add now?"
+            buttons = [
+                [InlineKeyboardButton(METHOD_LABELS[t], callback_data=f"qmt:{t}:{next_name}")
+                 for t in METHOD_TYPES],
+                [InlineKeyboardButton(
+                    "Пропустить" if lang == "ru" else "Skip",
+                    callback_data=f"qmt:skip:{next_name}"
+                )]
+            ]
+            await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+            return WAIT_QUICK_ADDRESS
+
+    eff = update.message
+    return await _finish_payout(eff, context, lang)
 
 
 async def _finish_payout(eff, context, lang: str):
@@ -759,8 +809,10 @@ async def cb_nav_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cb_nav_payout(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    user = await get_user(update.effective_user.id)
+    lang = get_lang(user) if user else "en"
     await query.answer(
-        "Нажмите 💸 внизу для новой выплаты." if (await get_user(update.effective_user.id) or {}).get("lang") == "ru"
+        "Нажмите 💸 внизу для новой выплаты." if lang == "ru"
         else "Press 💸 below for a new payout.",
         show_alert=True,
     )
