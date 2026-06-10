@@ -353,37 +353,37 @@ async def _send_import_instructions(target, lang: str, cancel_kb):
     """Send import instructions to user."""
     if lang == "ru":
         text = (
-            "Отправь файл .txt/.tsv или вставь список прямо сюда.\n"
-            "Одна строка – один блогер. Бот сам определит тип каждого поля.\n\n"
-            "Порядок не важен – просто перечисли через пробел:\n"
-            "- имя блогера\n"
-            "- Site ID (24 символа, только цифры и a-f)\n"
-            "- USDT-TRC20 (начинается с T, 34 символа)\n"
-            "- PayPal (адрес с @)\n"
-            "- основной метод в конце: site, usdt-trc20 или paypal\n\n"
-            "Если метод один – основной определится автоматически.\n\n"
+            "Прикрепите файл .txt или .tsv, либо вставьте список прямо в чат.\n"
+            "Каждая строка – один блогер. Бот определит тип каждого поля автоматически.\n\n"
+            "Поля можно перечислить в любом порядке через пробел:\n"
+            "- никнейм блогера\n"
+            "- Site ID (24 символа, цифры и буквы a–f)\n"
+            "- адрес USDT-TRC20 (начинается с T, 34 символа)\n"
+            "- адрес PayPal (содержит @)\n"
+            "- основной метод оплаты в конце строки: site, usdt-trc20 или paypal\n\n"
+            "Если у блогера только один метод, основной определится автоматически.\n\n"
             "Примеры:\n"
-            "`Name123 69cd46109be3718872a56f85 site`\n"
+            "`ambassador1 69cd46109be3718872a56f85 site`\n"
             "`blogger456 TDj7hq3Nug4MAh3GXCwLDZkMY4zcqcSyDy usdt-trc20`\n"
-            "`example789 email@example.com paypal`\n"
-            "`multi123 SiteID USDT_addr email@ex.com usdt-trc20`"
+            "`example789 example@mail.com paypal`\n"
+            "`multi123 SiteID USDT_addr example@mail.com usdt-trc20`"
         )
     else:
         text = (
-            "Send a .txt/.tsv file or paste the list here.\n"
+            "Attach a .txt or .tsv file, or paste the list directly into the chat.\n"
             "One line = one blogger. The bot detects each field automatically.\n\n"
-            "Just list everything separated by spaces:\n"
-            "- blogger name\n"
-            "- Site ID (24 chars, digits and a-f only)\n"
-            "- USDT-TRC20 (starts with T, 34 chars)\n"
-            "- PayPal (address with @)\n"
-            "- primary method at the end: site, usdt-trc20 or paypal\n\n"
-            "Single method – primary is set automatically.\n\n"
+            "List all fields separated by spaces, in any order:\n"
+            "- blogger username\n"
+            "- Site ID (24 chars, digits and letters a–f)\n"
+            "- USDT-TRC20 address (starts with T, 34 chars)\n"
+            "- PayPal address (contains @)\n"
+            "- primary payment method at the end: site, usdt-trc20 or paypal\n\n"
+            "If there is only one method, the primary is set automatically.\n\n"
             "Examples:\n"
-            "`Name123 69cd46109be3718872a56f85 site`\n"
+            "`ambassador1 69cd46109be3718872a56f85 site`\n"
             "`blogger456 TDj7hq3Nug4MAh3GXCwLDZkMY4zcqcSyDy usdt-trc20`\n"
-            "`example789 email@example.com paypal`\n"
-            "`multi123 SiteID USDT_addr email@ex.com usdt-trc20`"
+            "`example789 example@mail.com paypal`\n"
+            "`multi123 SiteID USDT_addr example@mail.com usdt-trc20`"
         )
     await target.reply_text(text, reply_markup=cancel_kb, parse_mode="Markdown")
 
@@ -487,8 +487,7 @@ async def _handle_parsed_text(text: str, update: Update, context: ContextTypes.D
 
     if lang == "ru":
         text = (
-            f"Найдено строк: {len(valid)} (+{new_count} новых, {existing_count} уже в базе)\n\n"
-            f"Выбери режим импорта:"
+            f"Распознано блогеров: {len(valid)}. Из них {new_count} новых, {existing_count} уже есть в базе.\n\nВыберите режим:"
         )
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton(
@@ -503,8 +502,7 @@ async def _handle_parsed_text(text: str, update: Update, context: ContextTypes.D
         ])
     else:
         text = (
-            f"Found rows: {len(valid)} (+{new_count} new, {existing_count} already in DB)\n\n"
-            f"Select import mode:"
+            f"Bloggers found: {len(valid)}, of which {new_count} are new and {existing_count} are already in the database.\n\nSelect import mode:"
         )
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton(
@@ -597,17 +595,17 @@ async def import_got_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     fname = doc.file_name or ""
     if not (fname.endswith(".txt") or fname.endswith(".tsv")):
         await update.message.reply_text(
-            "Принимаются только файлы .txt и .tsv"
+            "Поддерживаются только файлы формата .txt и .tsv."
             if lang == "ru" else
-            "Only .txt and .tsv files are accepted"
+            "Only .txt and .tsv files are supported."
         )
         return WAIT_DATA
 
     if doc.file_size and doc.file_size > 512 * 1024:
         await update.message.reply_text(
-            "Файл слишком большой – максимум 512 КБ"
+            "Файл слишком большой. Максимальный размер – 512 КБ."
             if lang == "ru" else
-            "File too large – max 512 KB"
+            "The file is too large. Maximum size is 512 KB."
         )
         return WAIT_DATA
 
@@ -621,9 +619,9 @@ async def import_got_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = buf.getvalue().decode("cp1251")
         except Exception:
             await update.message.reply_text(
-                "Не удалось прочитать файл. Используй кодировку UTF-8."
+                "Не удалось прочитать файл. Убедитесь, что он сохранён в кодировке UTF-8."
                 if lang == "ru" else
-                "Could not read file. Use UTF-8 encoding."
+                "Could not read the file. Make sure it is saved in UTF-8 encoding."
             )
             return WAIT_DATA
 
@@ -656,8 +654,8 @@ async def cb_ib_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not valid_rows:
         await query.edit_message_text(
-            "Нет новых блогеров для добавления." if lang == "ru"
-            else "No new bloggers to add."
+            "Все блогеры из списка уже есть в базе. Нечего добавлять." if lang == "ru"
+            else "All bloggers in the list are already in the database. Nothing to add."
         )
         return ConversationHandler.END
 
@@ -730,11 +728,11 @@ async def cb_ib_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     invalid = context.user_data.get("ib_invalid", [])
 
     if not changes:
-        await query.edit_message_text("Нет данных." if lang == "ru" else "No data.")
+        await query.edit_message_text("Нет данных для импорта." if lang == "ru" else "No data to import.")
         return ConversationHandler.END
 
     await query.edit_message_text(
-        "Применяю..." if lang == "ru" else "Applying..."
+        "Применяю изменения..." if lang == "ru" else "Applying changes..."
     )
 
     added, updated = await apply_changes(changes, user["id"], user)
@@ -756,7 +754,7 @@ async def cb_ib_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("ib_invalid", None)
     context.user_data.pop("ib_user", None)
     await query.edit_message_reply_markup(reply_markup=None)
-    await query.message.reply_text("Отменено." if lang == "ru" else "Cancelled.")
+    await query.message.reply_text("Импорт отменён." if lang == "ru" else "Import cancelled.")
     return ConversationHandler.END
 
 

@@ -31,7 +31,7 @@ async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db_b = await get_blogger_by_name(arg, user["id"])
         if not db_b:
             await eff_msg.reply_text(
-                f"Блогер «{arg}» не найден." if lang == "ru" else f"Blogger '{arg}' not found."
+                f"Блогер с никнеймом {arg} не найден в базе." if lang == "ru" else f"No blogger with username '{arg}' found in the database."
             )
             return
         await _ask_limit(update.message, db_b, lang)
@@ -40,7 +40,7 @@ async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bloggers = await get_bloggers_for_manager(user["id"])
     if not bloggers:
         await eff_msg.reply_text(
-            "Нет блогеров." if lang == "ru" else "No bloggers."
+            "В базе пока нет блогеров." if lang == "ru" else "No bloggers in the database yet."
         )
         return
 
@@ -48,7 +48,7 @@ async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton(b["name"], callback_data=f"hist_b:{b['id']}:{b['name']}")]
         for b in bloggers
     ]
-    text = "Выберите блогера:" if lang == "ru" else "Select blogger:"
+    text = "Выберите блогера из списка:" if lang == "ru" else "Select a blogger from the list:"
     await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
 
 
@@ -71,7 +71,7 @@ async def _ask_limit(target, db_b: dict, lang: str, edit: bool = False):
             InlineKeyboardButton("20",   callback_data=f"hist_n:{db_b['id']}:{db_b['name']}:20"),
             InlineKeyboardButton("Все",  callback_data=f"hist_n:{db_b['id']}:{db_b['name']}:0"),
         ]]
-        text = f"Сколько выплат показать для {db_b['name']}?"
+        text = f"Сколько последних выплат показать для {db_b['name']}?"
     else:
         buttons = [[
             InlineKeyboardButton("5",    callback_data=f"hist_n:{db_b['id']}:{db_b['name']}:5"),
@@ -79,7 +79,7 @@ async def _ask_limit(target, db_b: dict, lang: str, edit: bool = False):
             InlineKeyboardButton("20",   callback_data=f"hist_n:{db_b['id']}:{db_b['name']}:20"),
             InlineKeyboardButton("All",  callback_data=f"hist_n:{db_b['id']}:{db_b['name']}:0"),
         ]]
-        text = f"How many payouts to show for {db_b['name']}?"
+        text = f"How many recent payouts to show for {db_b['name']}?"
 
     if edit:
         await target.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
@@ -102,8 +102,8 @@ async def cb_history_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not payouts:
         await query.edit_message_text(
-            f"Нет выплат для {blogger_name}." if lang == "ru"
-            else f"No payouts for {blogger_name}.",
+            f"Выплат для {blogger_name} пока не было." if lang == "ru"
+            else f"No payouts found for {blogger_name} yet.",
             reply_markup=nav_keyboard(lang),
         )
         return
@@ -121,9 +121,9 @@ async def cb_history_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     shown = f"{len(payouts)}" if limit == 0 else f"{min(len(payouts), limit)}"
     header = (
-        f"{blogger_name} — {shown} выплат:"
+        f"История выплат {blogger_name} ({shown}):"
         if lang == "ru" else
-        f"{blogger_name} — {shown} payouts:"
+        f"Payout history for {blogger_name} ({shown}):"
     )
     text = header + "\n" + "\n".join(lines)
 

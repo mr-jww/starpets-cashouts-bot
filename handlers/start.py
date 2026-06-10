@@ -48,6 +48,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         _start_text(tg.first_name, lang),
         reply_markup=_persistent_keyboard(lang, role),
+        parse_mode="Markdown",
     )
 
 
@@ -55,19 +56,27 @@ def _start_text(name: str, lang: str) -> str:
     if lang == "ru":
         return (
             f"Привет, {name}!\n\n"
-            "Этот бот помогает оформлять выплаты блогерам StarPets. "
-            "Ты копируешь строки из таблицы – бот сам считает суммы, "
-            "подбирает реквизиты и готовит блок для бухгалтера.\n\n"
-            "Чтобы начать: укажи своё имя из таблицы в настройках, "
-            "добавь блогеров и их методы оплаты – дальше всё делается через /payout."
+            "Этот бот помогает оформлять выплаты амбассадорам StarPets.\n\n"
+            "Принцип простой: ты вставляешь строки из таблицы, "
+            "бот сам разбирает блогеров, считает суммы и формирует готовые блоки для отправки. "
+            "Реквизиты подставляются автоматически из базы данных.\n\n"
+            "*Первые шаги*\n"
+            "1. Откройте _Настройки_ и выберите своё имя менеджера.\n"
+            "2. Добавьте блогеров через кнопку _Блогер_ или импорт из таблицы.\n"
+            "3. Укажите каждому метод оплаты.\n"
+            "4. Нажмите _Заказать выплату_ и вставьте строки из таблицы."
         )
     return (
         f"Hi, {name}!\n\n"
-        "This bot helps you process payouts for StarPets bloggers. "
-        "You paste rows from the spreadsheet – the bot calculates totals, "
-        "picks the right payment details and formats a block for the accountant.\n\n"
-        "To get started: set your manager name in settings, "
-        "add your bloggers and their payment methods – then everything goes through /payout."
+        "This bot handles payouts for StarPets ambassadors.\n\n"
+        "The idea is simple: you paste rows from the spreadsheet, "
+        "the bot parses each blogger, totals up the amounts and produces ready-made payout blocks. "
+        "Payment details are pulled automatically from the database.\n\n"
+        "*Getting started*\n"
+        "1. Open _Settings_ and select your manager name.\n"
+        "2. Add bloggers using the _Blogger_ button or import from the spreadsheet.\n"
+        "3. Set a payment method for each blogger.\n"
+        "4. Tap _Create payout_ and paste rows from the spreadsheet."
     )
 
 
@@ -112,44 +121,70 @@ async def cb_show_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if lang == "ru":
         text = (
-            "*Справка*\n\n"
-            "*/payout* – главная команда. Скопируй строки из таблицы и вставь следующим сообщением."
-            " Бот разберёт блогеров, сложит суммы и выдаст готовые блоки для бухгалтера.\n"
-            "Если в настройках задано твоё имя менеджера, фильтр по нему применится автоматически."
-            " Можно переопределить: `/payout amb-Name` – только строки Джона,"
-            " `/payout amb-all` – все строки без фильтра.\n\n"
-            "*/bloggers* – список блогеров с реквизитами. Нажми на любого, чтобы посмотреть карточку,"
-            " добавить метод оплаты, заметку или удалить запись.\n\n"
-            "*/import_bloggers* – добавить сразу нескольких блогеров из списка или файла .txt.\n"
-            "Формат строки (через Tab): `имя | Site ID | USDT-TRC20 | PayPal | основной`\n"
-            "Пустые ячейки пропускаются. Хотя бы один метод обязателен.\n\n"
-            "*/history [ник]* – история выплат конкретному блогеру.\n\n"
-            "*/reformat* – если у тебя уже есть готовый блок выплаты, эта команда переключит его"
-            " между однострочным и многострочным форматом.\n\n"
-            "*/settings* – язык, имя менеджера, формат вывода по умолчанию.\n\n"
-            "Платформы: YouTube, YouTube Shorts, TikTok, Instagram, Facebook.\n"
-            "Методы оплаты: Site, USDT-TRC20, PayPal. Валюты: $, €, ₽."
+            "*Как пользоваться ботом*\n\n"
+            "*Выплаты*\n"
+            "Основная команда – /payout. Скопируйте строки из таблицы и вставьте следующим сообщением. "
+            "Бот разберёт каждого блогера, сложит суммы по видео и выдаст готовые блоки.\n"
+            "Если в настройках указано ваше имя, строки фильтруются по нему автоматически. "
+            "Чтобы обработать конкретного менеджера вручную: `/payout amb-Ambassador`, "
+            "все строки без фильтра: `/payout amb-all`.\n\n"
+            "*База блогеров*\n"
+                        "/bloggers – список ваших блогеров. Нажмите на любого, чтобы открыть карточку: "
+            "там можно добавить или изменить метод оплаты, оставить заметку, посмотреть историю выплат.\n\n"
+            "*Добавление блогеров*\n"
+            "Одного – кнопка *Блогер* на главном экране, затем введите никнейм.\n"
+            "Нескольких сразу – **Ещё** → *Импорт блогеров*. "
+            "Можно вставить список или прикрепить файл .txt. "
+            "Формат каждой строки (поля разделены табуляцией):\n"
+            "`nickname\tSite ID\tUSDT-TRC20\tPayPal\tосновной`\n"
+            "Пустые ячейки пропускаются, хотя бы одно поле оплаты должно быть заполнено.\n\n"
+            "*Синхронизация с таблицей*\n"
+            "Если ваши блогеры ведутся в Google Sheets, откройте *Ещё* → *Синхр. с таблицей*. "
+            "Бот прочитает ваш лист и добавит новых блогеров в базу.\n\n"
+            "*Переформат*\n"
+            "/reformat или **Ещё** → *Переформат* – вставьте готовый блок выплаты, "
+            "и бот переключит его между однострочным и многострочным форматом. "
+            "Можно также переключить язык блока: кнопка EN/RU под сообщением.\n\n"
+            "*История выплат*\n"
+            "/history nickname – все выплаты конкретному блогеру в хронологии.\n\n"
+            "*Настройки*\n"
+            "/settings – язык интерфейса, имя менеджера, формат вывода по умолчанию.\n\n"
+            "Поддерживаемые платформы: YouTube, YouTube Shorts, TikTok, Instagram, Facebook.\n"
+            "Методы оплаты: Site, USDT-TRC20, PayPal."
         )
     else:
         text = (
-            "*Help*\n\n"
-            "*/payout* – the main command. Copy rows from the spreadsheet and paste them as the next"
-            " message. The bot will parse the bloggers, total up the amounts and produce ready-made"
-            " blocks for the accountant.\n"
-            "If your manager name is set in settings, it filters automatically."
-            " You can override: `/payout amb-Name` – only John's rows,"
-            " `/payout amb-all` – everything without a filter.\n\n"
-            "*/bloggers* – your blogger list with payment details. Tap any blogger to open their card,"
-            " add a payment method, leave a note or remove the entry.\n\n"
-            "*/import_bloggers* – add multiple bloggers at once from a list or a .txt file.\n"
-            "Row format (tab-separated): `name | Site ID | USDT-TRC20 | PayPal | primary`\n"
-            "Empty cells are skipped. At least one method is required.\n\n"
-            "*/history [username]* – payout history for a specific blogger.\n\n"
-            "*/reformat* – if you already have a finished payout block, this switches it between"
-            " one-line and multiline format.\n\n"
-            "*/settings* – language, manager name, default output format.\n\n"
-            "Platforms: YouTube, YouTube Shorts, TikTok, Instagram, Facebook.\n"
-            "Payment methods: Site, USDT-TRC20, PayPal. Currencies: $, €, ₽."
+            "*How to use the bot*\n\n"
+            "*Payouts*\n"
+            "The main command is /payout. Copy rows from the spreadsheet and paste them as the next "
+            "message. The bot will parse each blogger, sum up the video amounts and produce ready-made "
+            "payout blocks.\n"
+            "If your manager name is set in settings, rows are filtered by it automatically. "
+            "To process a specific manager manually: `/payout amb-Ambassador`, "
+            "all rows without a filter: `/payout amb-all`.\n\n"
+            "*Blogger database*\n"
+            "/bloggers – your blogger list. Tap any entry to open the card: "
+            "you can add or change the payment method, leave a note or view payout history.\n\n"
+            "*Adding bloggers*\n"
+            "One blogger – use the *Blogger* button on the main screen, then enter the username.\n"
+            "Multiple at once – **More** → *Import bloggers*. "
+            "You can paste a list or attach a .txt file. "
+            "Each row format (tab-separated fields):\n"
+            "`nickname\tSite ID\tUSDT-TRC20\tPayPal\tprimary`\n"
+            "Empty cells are skipped; at least one payment field must be filled.\n\n"
+            "*Spreadsheet sync*\n"
+            "If your bloggers are tracked in Google Sheets, open *More* → *Sync with sheet*. "
+            "The bot will read your sheet and add any new bloggers to the database.\n\n"
+            "*Reformat*\n"
+                        "/reformat or *More* → *Reformat* – paste an existing payout block and the bot will "
+            "switch it between one-line and multiline format. "
+            "You can also switch the block language using the EN/RU button below the message.\n\n"
+            "*Payout history*\n"
+            "/history username – all payouts to a specific blogger in chronological order.\n\n"
+            "*Settings*\n"
+            "/settings – interface language, manager name, default output format.\n\n"
+            "Supported platforms: YouTube, YouTube Shorts, TikTok, Instagram, Facebook.\n"
+            "Payment methods: Site, USDT-TRC20, PayPal."
         )
     await query.edit_message_text(text, reply_markup=_back_keyboard(lang), parse_mode="Markdown")
 
@@ -164,7 +199,7 @@ async def cb_show_more(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await get_user(update.effective_user.id)
     lang = get_lang(user) if user else "en"
     if lang == "ru":
-        text = "Дополнительные функции:"
+        text = "Дополнительные возможности"
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔄 Переформат",     callback_data="rf_again")],
             [InlineKeyboardButton("📥 Импорт блогеров", callback_data="go_import")],
@@ -172,7 +207,7 @@ async def cb_show_more(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("← Назад",           callback_data="show_start")],
         ])
     else:
-        text = "Additional features:"
+        text = "More options"
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔄 Reformat",        callback_data="rf_again")],
             [InlineKeyboardButton("📥 Import bloggers", callback_data="go_import")],
@@ -193,8 +228,8 @@ async def cb_sync_my_sheet(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not mgr_name:
         await query.edit_message_text(
-            "Сначала выбери своё имя в настройках." if lang == "ru"
-            else "Set your manager name in settings first.",
+            "Сначала укажите имя менеджера в настройках." if lang == "ru"
+            else "Please set your manager name in settings first.",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("← Назад" if lang == "ru" else "← Back",
                                      callback_data="show_more")
@@ -203,14 +238,14 @@ async def cb_sync_my_sheet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if lang == "ru":
-        text = f"Синхронизация листа \u00ab{mgr_name}\u00bb.\nВыбери режим:"
+        text = f"Синхронизация с листом {mgr_name}.\nВыберите режим:"
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("➕ Только новые", callback_data="sync_sheet:new_only")],
             [InlineKeyboardButton("🔄 Полная синхронизация", callback_data="sync_sheet:full")],
             [InlineKeyboardButton("← Назад", callback_data="show_more")],
         ])
     else:
-        text = f"Sync sheet \u00ab{mgr_name}\u00bb.\nChoose mode:"
+        text = f"Sync sheet {mgr_name}.\nChoose mode:"
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("➕ New only", callback_data="sync_sheet:new_only")],
             [InlineKeyboardButton("🔄 Full sync", callback_data="sync_sheet:full")],
@@ -231,14 +266,14 @@ async def cb_sync_sheet_run(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from services.sheets_sync import read_sheets, sync_sheets_to_db, HAS_GSPREAD, SPREADSHEET_ID
     if not HAS_GSPREAD or not SPREADSHEET_ID:
         await query.edit_message_text(
-            "Google Sheets не настроен." if lang == "ru"
-            else "Google Sheets is not configured."
+            "Google Sheets не подключён. Обратитесь к администратору." if lang == "ru"
+            else "Google Sheets is not connected. Please contact the administrator."
         )
         return
 
     await query.edit_message_text(
-        f"Читаю лист «{mgr_name}»..." if lang == "ru"
-        else f"Reading sheet «{mgr_name}»..."
+        f"Читаю лист {mgr_name}, подождите..." if lang == "ru"
+        else f"Reading sheet {mgr_name}, please wait..."
     )
 
     try:
@@ -246,19 +281,27 @@ async def cb_sync_sheet_run(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rows = sheets_data.get(mgr_name, [])
         if not rows:
             await query.message.reply_text(
-                f"Лист «{mgr_name}» пуст или не найден." if lang == "ru"
-                else f"Sheet «{mgr_name}» is empty or not found."
+                f"Лист {mgr_name} не найден или пуст." if lang == "ru"
+                else f"Sheet {mgr_name} not found or is empty."
             )
         else:
             result = await sync_sheets_to_db(mgr_name, rows, user["id"], mode=mode)
             if lang == "ru":
-                text = f"Готово: добавлено {len(result.added)}, ошибок {len(result.errors)}."
+                text = (
+                    f"Синхронизация завершена. Добавлено: {len(result.added)}."
+                    if not result.errors else
+                    f"Синхронизация завершена. Добавлено: {len(result.added)}, не удалось обработать: {len(result.errors)}."
+                )
             else:
-                text = f"Done: added {len(result.added)}, errors {len(result.errors)}."
+                text = (
+                    f"Sync complete. Added: {len(result.added)}."
+                    if not result.errors else
+                    f"Sync complete. Added: {len(result.added)}, failed to process: {len(result.errors)}."
+                )
             await query.message.reply_text(text)
     except Exception as e:
         await query.message.reply_text(
-            f"Ошибка: {e}" if lang == "ru" else f"Error: {e}"
+            f"Не удалось выполнить синхронизацию: {e}" if lang == "ru" else f"Sync failed: {e}"
         )
 
 
@@ -270,11 +313,12 @@ async def cb_show_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(
         _settings_text(user, lang),
         reply_markup=_settings_keyboard(user, lang),
+        parse_mode="Markdown",
     )
 
 
 def _settings_text(user: dict, lang: str) -> str:
-    mgr = user.get("manager_filter") or ("не задано" if lang == "ru" else "not set")
+    mgr = user.get("manager_filter") or ("не указан" if lang == "ru" else "not set")
     cur_lang = "Русский 🇷🇺" if lang == "ru" else "English 🇬🇧"
     out_mode = user.get("output_mode") or "block"
     out_label = ("Блок" if out_mode == "block" else "Текст") if lang == "ru" \
@@ -288,26 +332,22 @@ def _settings_text(user: dict, lang: str) -> str:
     wpe = bool(user.get("warn_pending",    1))
     if lang == "ru":
         return (
-            f"Настройки:\n\n"
+            f"*Настройки*\n\n"
             f"Язык: {cur_lang}\n"
-            f"Имя менеджера (фильтр): {mgr}\n"
-            f"Оформление: {out_label}\n"
+            f"Менеджер: {mgr}\n"
+            f"Оформление блоков: {out_label}\n"
             f"Формат выплаты: {fmt_label}\n"
-            f"PAID – включать в выплату: {'да' if ip  else 'нет'}\n"
-            f"PAID – предупреждать: {'да' if wp  else 'нет'}\n"
-            f"PENDING – включать в выплату: {'да' if ipe else 'нет'}\n"
-            f"PENDING – предупреждать: {'да' if wpe else 'нет'}"
+            f"Строки PAID: {'включать' if ip else 'пропускать'} / предупреждать: {'да' if wp else 'нет'}\n"
+            f"Строки PENDING: {'включать' if ipe else 'пропускать'} / предупреждать: {'да' if wpe else 'нет'}"
         )
     return (
-        f"Settings:\n\n"
+        f"*Settings*\n\n"
         f"Language: {cur_lang}\n"
-        f"Manager name (filter): {mgr}\n"
+        f"Manager: {mgr}\n"
         f"Output style: {out_label}\n"
         f"Payout format: {fmt_label}\n"
-        f"PAID – include in payout: {'yes' if ip  else 'no'}\n"
-        f"PAID – warn about: {'yes' if wp  else 'no'}\n"
-        f"PENDING – include in payout: {'yes' if ipe else 'no'}\n"
-        f"PENDING – warn about: {'yes' if wpe else 'no'}"
+        f"PAID rows: {'include' if ip else 'skip'} / warn: {'yes' if wp else 'no'}\n"
+        f"PENDING rows: {'include' if ipe else 'skip'} / warn: {'yes' if wpe else 'no'}"
     )
 
 
@@ -379,6 +419,7 @@ async def cb_set_lang(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(
         _settings_text(user, lang),
         reply_markup=_settings_keyboard(user, lang),
+        parse_mode="Markdown",
     )
 
 
@@ -416,9 +457,9 @@ async def cb_set_mgr(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = get_lang(user) if user else "en"
     context.user_data["awaiting_mgr_msg_id"] = query.message.message_id
     text = (
-        "Выбери своё имя или введи вручную:"
+        "Выберите имя из списка или введите вручную:"
         if lang == "ru" else
-        "Select your name or enter manually:"
+        "Select your name from the list or enter it manually:"
     )
     await query.edit_message_text(text, reply_markup=await _mgr_selection_keyboard(lang))
 
@@ -463,14 +504,14 @@ async def cb_mgr_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if lang == "ru":
         await query.edit_message_text(
-            f"Выбрано: {name}\n\nВведи командный пароль:",
+            f"Выбрано: {name}\n\nВведите командный пароль для подтверждения:",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("← Назад", callback_data="set_mgr")
             ]])
         )
     else:
         await query.edit_message_text(
-            f"Selected: {name}\n\nEnter team password:",
+            f"Selected: {name}\n\nEnter the team password to confirm:",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("← Back", callback_data="set_mgr")
             ]])
@@ -488,14 +529,14 @@ async def cb_mgr_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["awaiting_mgr_msg_id"] = query.message.message_id
     if lang == "ru":
         await query.edit_message_text(
-            "Введи своё имя менеджера (точно как в таблице):\n/cancel — отмена",
+            "Введите своё имя точно так, как оно указано в таблице:",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("← Назад", callback_data="set_mgr")
             ]])
         )
     else:
         await query.edit_message_text(
-            "Enter your manager name (exactly as in the spreadsheet):\n/cancel — cancel",
+            "Enter your manager name exactly as it appears in the spreadsheet:",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("← Back", callback_data="set_mgr")
             ]])
@@ -528,6 +569,7 @@ async def _apply_mgr_name(update, context, name: str, lang: str):
     await update.effective_chat.send_message(
         _settings_text(user, lang),
         reply_markup=_settings_keyboard(user, lang),
+        parse_mode="Markdown",
     )
 
 
@@ -573,9 +615,9 @@ async def handle_mgr_pw_input(update: Update, context: ContextTypes.DEFAULT_TYPE
                     chat_id=update.effective_chat.id,
                     message_id=msg_id,
                     text=(
-                        "Слишком много неверных попыток. Подожди 10 минут."
+                        "Слишком много неверных попыток. Повторите через 10 минут."
                         if lang == "ru" else
-                        "Too many wrong attempts. Wait 10 minutes."
+                        "Too many incorrect attempts. Please try again in 10 minutes."
                     ),
                     reply_markup=InlineKeyboardMarkup([[
                         InlineKeyboardButton(
@@ -603,9 +645,9 @@ async def handle_mgr_pw_input(update: Update, context: ContextTypes.DEFAULT_TYPE
                 chat_id=update.effective_chat.id,
                 message_id=msg_id,
                 text=(
-                    f"Неверный пароль. Осталось попыток: {remaining}\nВведи пароль:"
+                    f"Неверный пароль. Осталось попыток: {remaining}."
                     if lang == "ru" else
-                    f"Wrong password. Attempts left: {remaining}\nEnter password:"
+                    f"Incorrect password. Attempts remaining: {remaining}."
                 ),
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton(
@@ -684,6 +726,7 @@ async def cb_mgr_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(
         _settings_text(user, lang),
         reply_markup=_settings_keyboard(user, lang),
+        parse_mode="Markdown",
     )
 
 
@@ -721,6 +764,7 @@ async def cb_show_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(
         _start_text(tg.first_name, lang),
         reply_markup=_main_keyboard(lang, role),
+        parse_mode="Markdown",
     )
 
 
@@ -738,6 +782,7 @@ async def cb_toggle_output_mode(update: Update, context: ContextTypes.DEFAULT_TY
     await query.edit_message_text(
         _settings_text(user, lang),
         reply_markup=_settings_keyboard(user, lang),
+        parse_mode="Markdown",
     )
 
 
@@ -754,6 +799,7 @@ async def cb_toggle_default_fmt(update: Update, context: ContextTypes.DEFAULT_TY
     await query.edit_message_text(
         _settings_text(user, lang),
         reply_markup=_settings_keyboard(user, lang),
+        parse_mode="Markdown",
     )
 
 
@@ -830,6 +876,7 @@ async def cb_toggle_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(
         _settings_text(user, lang),
         reply_markup=_settings_keyboard(user, lang),
+        parse_mode="Markdown",
     )
 
 
@@ -846,9 +893,9 @@ async def cb_rf_again(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop(k, None)
     context.user_data["rf_user"] = user
     await query.message.reply_text(
-        "Вставьте блок для переформатирования:\n/cancel — отмена"
+        "Вставьте готовый блок выплаты для переформатирования:"
         if lang == "ru" else
-        "Paste the payout block to reformat:\n/cancel — cancel"
+        "Paste the payout block you want to reformat:"
     )
     return WAIT_REFORMAT
 
@@ -864,6 +911,7 @@ async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         _settings_text(user, lang),
         reply_markup=_settings_keyboard(user, lang),
+        parse_mode="Markdown",
     )
 
 
@@ -913,7 +961,7 @@ async def cmd_reformat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["rf_user"] = user
     if lang == "ru":
         await update.message.reply_text(
-            "Вставь готовый блок выплаты — однострочный или многострочный. "
+            "Вставьте готовый блок выплаты — однострочный или многострочный. "
             "Бот переключит формат на противоположный.\n"
             "/cancel – отмена"
         )
@@ -1235,6 +1283,7 @@ async def fallback_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             _start_text(tg.first_name, lang),
             reply_markup=_main_keyboard(lang, role),
+            parse_mode="Markdown",
         )
         return
     # 💸 button is handled as ConversationHandler entry_point in payout.py
@@ -1255,13 +1304,13 @@ async def fallback_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("💸 Выплата", callback_data="start_payout"),
              InlineKeyboardButton("🏠 Главная", callback_data="show_start")],
         ])
-        await update.message.reply_text("Не понял команду.", reply_markup=kb)
+        await update.message.reply_text("Не распознал команду. Воспользуйся кнопками ниже.", reply_markup=kb)
     else:
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("💸 Payout", callback_data="start_payout"),
              InlineKeyboardButton("🏠 Home",   callback_data="show_start")],
         ])
-        await update.message.reply_text("Command not recognized.", reply_markup=kb)
+        await update.message.reply_text("Command not recognized. Use the buttons below.", reply_markup=kb)
 
 
 # --------------------------------------------------------------------------- #
