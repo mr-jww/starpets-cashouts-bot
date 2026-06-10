@@ -185,16 +185,16 @@ async def cmd_payout(update: Update, context: ContextTypes.DEFAULT_TYPE):
         hint = f"\n{'Фильтр отключён' if lang == 'ru' else 'Filter disabled'}"
 
     if lang == "ru":
-        text = "Вставьте строки из таблицы." + hint
+        text = "Выдели строки в таблице, скопируй их (*Ctrl+C*) и вставь сюда (*Ctrl+Shift+V*)." + hint
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton("✕ Отмена", callback_data="payout_cancel"),
         ]])
     else:
-        text = "Paste rows from the spreadsheet." + hint
+        text = "Select the rows in the spreadsheet, copy them (*Ctrl+C*) and paste here (*Ctrl+Shift+V*)." + hint
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton("✕ Cancel", callback_data="payout_cancel"),
         ]])
-    await update.effective_message.reply_text(text, reply_markup=keyboard)
+    await update.effective_message.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
     return WAIT_ROWS
 
 
@@ -219,14 +219,14 @@ async def payout_got_rows(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if result.critical_errors and not result.bloggers:
         await update.message.reply_text(
-            ("Ошибка разбора:\n" if lang == "ru" else "Parse error:\n")
+            ("Не удалось разобрать вставленный текст:\n" if lang == "ru" else "Could not parse the pasted text:\n")
             + "\n".join(result.critical_errors)
         )
         return ConversationHandler.END
 
     if not result.bloggers:
         await update.message.reply_text(
-            "Не найдено строк с данными." if lang == "ru" else "No data rows found."
+            "Не нашёл строк с данными. Убедись, что скопировал из таблицы через Ctrl+Shift+V." if lang == "ru" else "No data rows found. Make sure you copied from the spreadsheet using Ctrl+Shift+V."
         )
         return ConversationHandler.END
 
@@ -238,9 +238,9 @@ async def payout_got_rows(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         if not filtered:
             await update.message.reply_text(
-                f"Нет блогеров менеджера «{effective_filter}».\n/payout amb-all — показать всех"
+                f"Среди вставленных строк нет записей менеджера {effective_filter}.\nЧтобы обработать все строки без фильтра: /payout amb-all"
                 if lang == "ru" else
-                f"No bloggers for manager '{effective_filter}'.\n/payout amb-all — show all"
+                f"No rows found for manager {effective_filter} in the pasted data.\nTo process all rows without a filter: /payout amb-all"
             )
             return ConversationHandler.END
         result.bloggers = filtered
@@ -316,15 +316,15 @@ async def payout_got_rows(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not result.bloggers:
         await update.message.reply_text(
-            "Нет строк со статусом UNPAID. Все строки пропущены по настройкам фильтра."
+            "Все строки имеют статус PAID или PENDING и были пропущены. Настройки фильтра: /settings."
             if lang == "ru" else
-            "No UNPAID rows found. All rows were filtered out by status settings."
+            "All rows have PAID or PENDING status and were skipped. Filter settings: /settings."
         )
         return ConversationHandler.END
 
     if result.critical_errors:
         await update.message.reply_text(
-            ("Пропущены строки:\n" if lang == "ru" else "Rows skipped:\n")
+            ("Часть строк не удалось разобрать и они пропущены:\n" if lang == "ru" else "Some rows could not be parsed and were skipped:\n")
             + "\n".join(result.critical_errors)
         )
 
@@ -360,7 +360,7 @@ async def _send_summary(target: Message, bloggers: list[BloggerResult], lang: st
             if lang == "ru" else
             f"• {b.blogger} — {b.video_count} vid. — {b.total_price_display} — {games}{err}"
         )
-    header = f"Найдено: {len(bloggers)}" if lang == "ru" else f"Found: {len(bloggers)}"
+    header = f"Распознано блогеров: {len(bloggers)}" if lang == "ru" else f"Bloggers found: {len(bloggers)}"
     await target.reply_text(header + "\n" + "\n".join(lines))
 
 
@@ -377,13 +377,13 @@ async def _ask_unknown(target: Message, context):
             InlineKeyboardButton("Добавить", callback_data="unk:add"),
             InlineKeyboardButton("Пропустить", callback_data="unk:skip"),
         ]])
-        text = f"Не в базе ({len(unknown)}):\n{names}\n\nДобавить всех?"
+        text = f"Следующие блогеры не найдены в базе ({len(unknown)}):\n{names}\n\nДобавить их и продолжить?"
     else:
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton("Add all", callback_data="unk:add"),
             InlineKeyboardButton("Skip all", callback_data="unk:skip"),
         ]])
-        text = f"Not in database ({len(unknown)}):\n{names}\n\nAdd all?"
+        text = f"The following bloggers are not in the database ({len(unknown)}):\n{names}\n\nAdd them and continue?"
     await target.reply_text(text, reply_markup=keyboard)
     return WAIT_UNKNOWN
 
@@ -406,11 +406,11 @@ async def cb_unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 added_count += 1
         if lang == "ru":
             await query.edit_message_text(
-                f"Добавлено: {added_count}. Теперь укажи методы оплаты для них."
+                f"Добавлено: {added_count}. Теперь нужно указать методы оплаты для каждого."
             )
         else:
             await query.edit_message_text(
-                f"Added: {added_count}. Now specify payment methods for them."
+                f"Added: {added_count}. Now set a payment method for each of them."
             )
     else:
         context.user_data["skipped"].extend([b.blogger for b in unknown])
@@ -424,7 +424,7 @@ async def _wait_unknown_text(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user = context.user_data.get("user")
     lang = get_lang(user) if user else "en"
     await update.message.reply_text(
-        "Нажмите одну из кнопок." if lang == "ru" else "Press one of the buttons."
+        "Воспользуйтесь кнопками выше." if lang == "ru" else "Use the buttons above."
     )
     return WAIT_UNKNOWN
 
@@ -447,12 +447,12 @@ async def cb_quick_method_type(update: Update, context: ContextTypes.DEFAULT_TYP
     context.user_data["qm_blogger"] = blogger_name
 
     hints = {
-        "site":       {"ru": f"Введите Profile ID для {blogger_name}:",
+        "site":       {"ru": f"Укажи Profile ID для {blogger_name}:",
                        "en": f"Enter Profile ID for {blogger_name}:"},
-        "usdt-trc20": {"ru": f"Введите адрес USDT-TRC20 для {blogger_name}:",
-                       "en": f"Enter USDT-TRC20 address for {blogger_name}:"},
-        "paypal":     {"ru": f"Введите email PayPal для {blogger_name}:",
-                       "en": f"Enter PayPal email for {blogger_name}:"},
+        "usdt-trc20": {"ru": f"Укажи адрес кошелька USDT-TRC20 для {blogger_name}:",
+                       "en": f"Enter USDT-TRC20 wallet address for {blogger_name}:"},
+        "paypal":     {"ru": f"Укажи адрес PayPal для {blogger_name}:",
+                       "en": f"Enter PayPal address for {blogger_name}:"},
     }
     await query.edit_message_text(hints.get(method_type, {}).get(lang, "Enter address:"))
     return WAIT_QUICK_ADDRESS
@@ -464,7 +464,7 @@ async def quick_address_input(update: Update, context: ContextTypes.DEFAULT_TYPE
     address = update.message.text.strip()
 
     if not address:
-        await update.message.reply_text("Пустой адрес." if lang == "ru" else "Empty address.")
+        await update.message.reply_text("Поле не может быть пустым. Введите реквизиты." if lang == "ru" else "Field cannot be empty. Please enter the payment details.")
         return WAIT_QUICK_ADDRESS
 
     blogger_name = context.user_data.get("qm_blogger", "")
@@ -558,22 +558,22 @@ async def _finish_payout(eff, context, lang: str):
 
     if skipped:
         await eff.reply_text(
-            f"Пропущены: {', '.join(skipped)}" if lang == "ru"
-            else f"Skipped: {', '.join(skipped)}"
+            f"Пропущены (нет метода оплаты): {', '.join(skipped)}" if lang == "ru"
+            else f"Skipped (no payment method): {', '.join(skipped)}"
         )
 
     has_any_errors = any(br.has_errors for br, _ in known)
     if lang == "ru":
         summary = (
-            f"Выплаты сформированы ({len(all_texts)} шт.). Есть ошибки — см. сводку выше."
+            f"Готово. Сформировано {len(all_texts)} выплат. Часть строк содержит ошибки — проверь сводку выше."
             if has_any_errors else
-            f"Выплаты сформированы ({len(all_texts)} шт.). Всё в порядке."
+            f"Готово. Сформировано {len(all_texts)} выплат."
         )
     else:
         summary = (
-            f"Payouts generated ({len(all_texts)}). Errors found — see summary above."
+            f"Done. {len(all_texts)} payout(s) generated. Some rows contain errors — check the summary above."
             if has_any_errors else
-            f"Payouts generated ({len(all_texts)}). All good."
+            f"Done. {len(all_texts)} payout(s) generated."
         )
     await eff.reply_text(summary, reply_markup=_nav_keyboard(lang))
     return ConversationHandler.END
@@ -774,7 +774,7 @@ async def cb_payout_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await query.message.delete()
     except Exception:
-        await query.edit_message_text("Отменено." if lang == "ru" else "Cancelled.")
+        await query.edit_message_text("Выплата отменена." if lang == "ru" else "Payout cancelled.")
     return ConversationHandler.END
 
 

@@ -63,14 +63,15 @@ async def _do_sync(update_or_query, context, lang: str, mode: str = "new_only"):
                 [InlineKeyboardButton("✕ Cancel", callback_data="sync:cancel")],
             ])
             await chat.send_message(
-                f"Data check failed:\n{e}\n\nApply anyway?",
+                f"Проверка данных не пройдена:\n{e}\n\nПрименить принудительно?" if lang == "ru"
+                else f"Data check failed:\n{e}\n\nApply anyway?",
                 reply_markup=kb
             )
         return
     except Exception as e:
         await chat.send_message(
-            f"Ошибка при чтении таблицы: {e}" if lang == "ru"
-            else f"Error reading spreadsheet: {e}"
+            f"Не удалось прочитать таблицу: {e}" if lang == "ru"
+            else f"Could not read the spreadsheet: {e}"
         )
         return
 
@@ -91,17 +92,17 @@ async def _do_sync(update_or_query, context, lang: str, mode: str = "new_only"):
 
     if lang == "ru":
         summary = (
-            f"Синхронизация завершена\n\n"
+            f"Синхронизация завершена.\n\n"
             f"Добавлено: {total_added}\n"
             f"Обновлено: {total_updated}\n"
-            f"Ошибок: {total_errors}\n\n"
+            + (f"Не удалось обработать: {total_errors}\n\n" if total_errors else "\n")
         )
     else:
         summary = (
-            f"Sync complete\n\n"
+            f"Sync complete.\n\n"
             f"Added: {total_added}\n"
             f"Updated: {total_updated}\n"
-            f"Errors: {total_errors}\n\n"
+            + (f"Failed to process: {total_errors}\n\n" if total_errors else "\n")
         )
     if lines:
         summary += "\n".join(lines)
@@ -126,7 +127,7 @@ async def cmd_sync_sheets(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("✕ Отмена", callback_data="sync:cancel")],
         ])
         await update.message.reply_text(
-            "Выбери режим синхронизации с Google Sheets:", reply_markup=kb
+            "Выберите режим синхронизации с Google Sheets:", reply_markup=kb
         )
     else:
         kb = InlineKeyboardMarkup([
@@ -152,7 +153,7 @@ async def cb_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mode = query.data.split(":")[1]
 
     if mode == "cancel":
-        await query.edit_message_text("Отменено." if lang == "ru" else "Cancelled.")
+        await query.edit_message_text("Синхронизация отменена." if lang == "ru" else "Sync cancelled.")
         return
 
     if mode == "force_full":
@@ -160,20 +161,20 @@ async def cb_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Run full sync bypassing sanity check
         from services.sheets_sync import run_full_sync as _rsf, HAS_GSPREAD, SPREADSHEET_ID
         if not HAS_GSPREAD or not SPREADSHEET_ID:
-            await query.message.reply_text("gspread or SHEETS_ID not configured.")
+            await query.message.reply_text("Google Sheets не подключён. Обратитесь к администратору." if lang == "ru" else "Google Sheets is not connected. Contact the administrator.")
             return
-        await query.message.reply_text("Применяю принудительно..." if lang == "ru" else "Applying forcefully...")
+        await query.message.reply_text("Применяю без проверки данных..." if lang == "ru" else "Applying without data check...")
         try:
             results = await _rsf(mode="full", skip_sanity=True)
             total_added = sum(len(r.added) for r in results.values())
             total_updated = sum(len(r.updated) for r in results.values())
             await query.message.reply_text(
-                f"Готово. Добавлено: {total_added}, обновлено: {total_updated}"
+                f"Готово. Добавлено: {total_added}, обновлено: {total_updated}."
                 if lang == "ru" else
-                f"Done. Added: {total_added}, updated: {total_updated}"
+                f"Done. Added: {total_added}, updated: {total_updated}."
             )
         except Exception as e:
-            await query.message.reply_text(f"Ошибка: {e}" if lang == "ru" else f"Error: {e}")
+            await query.message.reply_text(f"Не удалось выполнить синхронизацию: {e}" if lang == "ru" else f"Sync failed: {e}")
         return
 
     await query.edit_message_reply_markup(reply_markup=None)

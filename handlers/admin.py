@@ -164,16 +164,16 @@ async def cb_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         users    = await get_all_users()
         bloggers = await get_all_bloggers()
         text = (
-            f"Панель администратора\n\nПользователей: {len(users)}\nБлогеров: {len(bloggers)}"
+            f"Панель администратора\n\nПользователей: {len(users)}\nБлогеров в базе: {len(bloggers)}"
             if lang == "ru" else
-            f"Admin panel\n\nUsers: {len(users)}\nBloggers: {len(bloggers)}"
+            f"Admin panel\n\nUsers: {len(users)}\nBloggers in DB: {len(bloggers)}"
         )
         await query.edit_message_text(text, reply_markup=_admin_main_kb(lang))
 
     # ---- USERS ----
     elif action == "users":
         users = await get_all_users()
-        lines = ["👥 Пользователи:" if lang == "ru" else "👥 Users:"]
+        lines = ["Пользователи:" if lang == "ru" else "Users:"]
         for u in users:
             role = "admin" if u["role"] == "admin" else "manager"
             mgr  = f" [{u['manager_filter']}]" if u.get("manager_filter") else ""
@@ -196,9 +196,9 @@ async def cb_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == "payouts":
         payouts = await get_all_recent_payouts(limit=20)
         if not payouts:
-            text = "Выплат нет." if lang == "ru" else "No payouts."
+            text = "Выплат пока нет." if lang == "ru" else "No payouts yet."
         else:
-            lines = ["📊 Последние 20 выплат:" if lang == "ru" else "📊 Last 20 payouts:"]
+            lines = ["Последние 20 выплат:" if lang == "ru" else "Last 20 payouts:"]
             for p in payouts:
                 lines.append(
                     f"\n{p['created_at'][:16]}  @{p['manager_username'] or '?'}\n"
@@ -214,7 +214,7 @@ async def cb_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         limit = int(arg) if arg.isdigit() else 30
         logs  = await get_recent_logs(limit=limit)
         if not logs:
-            text = "Логов нет." if lang == "ru" else "No logs."
+            text = "Записей в логе нет." if lang == "ru" else "No log entries found."
         else:
             lines = []
             for entry in logs:
@@ -241,7 +241,7 @@ async def cb_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         log_path = _log_file_path()
         if not log_path:
             await query.answer(
-                "Лог-файл не найден." if lang == "ru" else "Log file not found.",
+                "Файл лога не найден." if lang == "ru" else "Log file not found.",
                 show_alert=True
             )
             return
@@ -303,9 +303,9 @@ async def cb_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         users    = await get_all_users()
         bloggers = await get_all_bloggers()
         text = (
-            f"Панель администратора\n\nПользователей: {len(users)}\nБлогеров: {len(bloggers)}"
+            f"Панель администратора\n\nПользователей: {len(users)}\nБлогеров в базе: {len(bloggers)}"
             if lang == "ru" else
-            f"Admin panel\n\nUsers: {len(users)}\nBloggers: {len(bloggers)}"
+            f"Admin panel\n\nUsers: {len(users)}\nBloggers in DB: {len(bloggers)}"
         )
         await query.edit_message_text(text, reply_markup=_admin_main_kb(lang))
 
@@ -375,7 +375,7 @@ async def cb_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = "\n".join(lines)
             if len(text) > 3800:
                 text = text[:3800] + "\n..."
-        await query.edit_message_text(text, reply_markup=_back_kb(lang))
+        await query.edit_message_text(text, reply_markup=_back_kb(lang), parse_mode="Markdown")
 
 
 # --------------------------------------------------------------------------- #

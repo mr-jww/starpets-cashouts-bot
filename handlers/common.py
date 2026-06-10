@@ -22,8 +22,8 @@ async def get_user_or_reject(update: Update) -> dict | None:
     user = await get_user(tg.id)
     if not user:
         await update.effective_message.reply_text(
-            "Вы не зарегистрированы. Используйте /start для регистрации.\n"
-            "You are not registered. Use /start to register."
+            "Вы не зарегистрированы. Нажмите /start чтобы начать.\n"
+            "You are not registered. Press /start to begin."
         )
         return None
     return user
@@ -42,7 +42,7 @@ def admin_only(func):
     @wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.effective_user.id != ADMIN_ID:
-            await update.effective_message.reply_text("Нет доступа. / Access denied.")
+            await update.effective_message.reply_text("Нет доступа.")
             return
         return await func(update, context)
     return wrapper

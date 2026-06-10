@@ -194,7 +194,7 @@ async def screen_list(target, user: dict, lang: str,
 async def screen_blogger(target, blogger_id: int, lang: str, edit: bool = True, back_page: int = 0):
     b = await get_blogger_by_id(blogger_id)
     if not b or not b.get("is_active", 1):
-        await _edit_or_reply(target, "Блогер не найден." if lang == "ru" else "Blogger not found.", edit)
+        await _edit_or_reply(target, "Блогер не найден или был удалён." if lang == "ru" else "Blogger not found or has been removed.", edit)
         return
 
     methods = await get_active_methods(blogger_id)
@@ -206,7 +206,7 @@ async def screen_blogger(target, blogger_id: int, lang: str, edit: bool = True, 
             star = " ★" if m.get("is_primary") else ""
             lines.append(f"  {METHOD_LABELS.get(m['type'], m['type'])}: {m['address']}{star}")
     else:
-        lines.append("  " + ("нет методов оплаты" if lang == "ru" else "no payment methods"))
+        lines.append("  " + ("методы оплаты не указаны" if lang == "ru" else "no payment methods set"))
 
     text = "\n".join(lines)
 
@@ -250,7 +250,7 @@ async def screen_blogger(target, blogger_id: int, lang: str, edit: bool = True, 
 async def screen_method(target, method_id: int, blogger_id: int, lang: str, edit: bool = True):
     m = await get_method_by_id(method_id)
     if not m:
-        await _edit_or_reply(target, "Метод не найден." if lang == "ru" else "Method not found.", edit)
+        await _edit_or_reply(target, "Метод оплаты не найден." if lang == "ru" else "Payment method not found.", edit)
         return
 
     label = METHOD_LABELS.get(m["type"], m["type"])
@@ -580,7 +580,7 @@ async def cb_bm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["bm_msg_id"]  = query.message.message_id
         context.user_data["bm_user_id"] = user["id"]
         await query.edit_message_text(
-            "Введи часть имени блогера:" if lang == "ru" else "Enter part of blogger name:",
+            "Введи часть никнейма для поиска:" if lang == "ru" else "Enter part of the username to search:",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("← Назад" if lang == "ru" else "← Back",
                                      callback_data="bm:list:0:")
@@ -610,7 +610,7 @@ async def cb_bm(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ]])
             )
             return
-        header = ("Блогеры без метода:" if bloggers_without else "Все блогеры:") if lang == "ru"                  else ("Bloggers without method:" if bloggers_without else "All bloggers:")
+        header = ("Блогеры без метода оплаты:" if bloggers_without else "Все блогеры:") if lang == "ru"                  else ("Bloggers without a payment method:" if bloggers_without else "All bloggers:")
         buttons = [[InlineKeyboardButton(b["name"], callback_data=f"bm:add_method_type:{b['id']}")]
                    for b in bloggers]
         if bloggers_without and len(all_bloggers) > len(bloggers_without):
@@ -626,7 +626,7 @@ async def cb_bm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buttons = [[InlineKeyboardButton(b["name"], callback_data=f"bm:add_method_type:{b['id']}")]
                    for b in bloggers]
         buttons.append([InlineKeyboardButton("← Назад" if lang == "ru" else "← Back", callback_data="show_start")])
-        header = "Все блогеры:" if lang == "ru" else "All bloggers:"
+        header = "Все блогеры" if lang == "ru" else "All bloggers"
         await query.edit_message_text(header, reply_markup=InlineKeyboardMarkup(buttons))
 
     # ---- ADD BLOGGER ----
@@ -637,8 +637,8 @@ async def cb_bm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _back_page = context.user_data.get("bm_list_page", 0)
         back_cb = "show_start" if origin == "home" else f"bm:list:{_back_page}:"
         await query.edit_message_text(
-            "Введите никнейм блогера (как в таблице):" if lang == "ru"
-            else "Enter blogger username (as in spreadsheet):",
+            "Введи никнейм блогера точно так, как он указан в таблице:" if lang == "ru"
+            else "Enter the blogger username exactly as it appears in the spreadsheet:",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("← Назад" if lang == "ru" else "← Back", callback_data=back_cb)
             ]])
@@ -669,8 +669,8 @@ async def cb_bm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             callback_data=f"bm:add_method_type:{blogger_id}"
         )]
         await query.edit_message_text(
-            f"Тип: {label}\n{hint}\n\nВведите адрес:" if lang == "ru"
-            else f"Type: {label}\n{hint}\n\nEnter address:",
+            f"Метод: {label}\n{hint}\n\nВведи реквизиты:" if lang == "ru"
+            else f"Method: {label}\n{hint}\n\nEnter the payment details:",
             reply_markup=InlineKeyboardMarkup([back_row])
         )
         context.user_data["bm_action"] = "add_address"
@@ -683,7 +683,7 @@ async def cb_bm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         current = b.get("notes") or ""
         prefix = (f"Текущая заметка: {current}\n\n" if current else "")
         await query.edit_message_text(
-            prefix + ("Введите новую заметку:" if lang == "ru" else "Enter new note:"),
+            prefix + ("Введи текст заметки:" if lang == "ru" else "Enter note text:"),
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton(
                     "← Назад" if lang == "ru" else "← Back",
@@ -735,7 +735,7 @@ async def cb_bm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["bm_method_id"]  = method_id
         context.user_data["bm_blogger_id"] = blogger_id
         await query.edit_message_text(
-            "Введите новый адрес:" if lang == "ru" else "Enter new address:",
+            "Введи новые реквизиты:" if lang == "ru" else "Enter the new payment details:",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton(
                     "← Назад" if lang == "ru" else "← Back",
@@ -752,9 +752,9 @@ async def cb_bm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         name = b["name"] if b else "?"
         await screen_confirm(
             query,
-            (f"Удалить блогера «{name}»?\nИстория выплат сохранится."
+            (f"Удалить блогера {name}?\nИстория выплат останется в базе."
              if lang == "ru" else
-             f"Delete blogger '{name}'?\nPayout history will be kept."),
+             f"Delete {name}?\nPayout history will be preserved."),
             yes_cb=f"bm:del_blogger_do:{blogger_id}",
             no_cb=f"bm:blogger:{blogger_id}",
             lang=lang,
@@ -842,8 +842,8 @@ async def cmd_add_method(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else "Add a blogger first: /add_blogger"
         )
         return
-    header = ("Блогеры без метода:" if bloggers_without else "Все блогеры:") if lang == "ru" \
-             else ("Bloggers without method:" if bloggers_without else "All bloggers:")
+    header = ("Блогеры без метода оплаты:" if bloggers_without else "Все блогеры:") if lang == "ru" \
+             else ("Bloggers without a payment method:" if bloggers_without else "All bloggers:")
     buttons = [[InlineKeyboardButton(b["name"], callback_data=f"bm:add_method_type:{b['id']}")]
                for b in bloggers]
     if bloggers_without:
@@ -867,9 +867,8 @@ async def cmd_add_blogger(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = get_lang(user)
     context.user_data["bm_origin"] = "list"  # command entry always backs to list
     sent = await update.message.reply_text(
-        "Введите никнейм блогера:\n/cancel — отмена"
-        if lang == "ru" else
-        "Enter blogger username:\n/cancel — cancel",
+        "Введи никнейм блогера точно так, как он указан в таблице:" if lang == "ru"
+        else "Enter the blogger username exactly as it appears in the spreadsheet:",
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("← Назад" if lang == "ru" else "← Back", callback_data="bm:list")
         ]])
