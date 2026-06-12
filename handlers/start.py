@@ -9,7 +9,8 @@ from telegram.ext import (
     MessageHandler, ConversationHandler, filters,
 )
 
-from database.queries import (upsert_user, get_user, set_user_lang, set_manager_filter,
+from database.queries import (
+    set_show_all_bloggers, get_show_all_bloggers, upsert_user, get_user, set_user_lang, set_manager_filter,
     set_output_mode, set_default_fmt, set_filter_setting, db_log,
     set_manager_password, check_manager_password, reset_lockout, get_locked_users)
 from services.logger import log_info
@@ -45,11 +46,58 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_info("START", user_id=tg.id, username=tg.username, role=role)
     await db_log(user["id"], "START", f"role={role}")
 
-    await update.message.reply_text(
-        _start_text(tg.first_name, lang),
-        reply_markup=_persistent_keyboard(lang, role),
-        parse_mode="Markdown",
+    if _is_new_user(user) and role != "admin":
+        await update.message.reply_text(
+            _onboarding_text(tg.first_name, lang),
+            reply_markup=_onboarding_keyboard(lang),
+            parse_mode="Markdown",
+        )
+    else:
+        await update.message.reply_text(
+            _start_text(tg.first_name, lang),
+            reply_markup=_persistent_keyboard(lang, role),
+            parse_mode="Markdown",
+        )
+
+
+
+def _is_new_user(user: dict) -> bool:
+    """True if user has never set a manager name."""
+    return not user.get("manager_filter")
+
+
+def _onboarding_text(name: str, lang: str) -> str:
+    if lang == "ru":
+        return (
+            f"Добро пожаловать, {name}!\n\n"
+            "Этот бот помогает оформлять выплаты амбассадорам StarPets. "
+            "Вы вставляете строки из таблицы — бот считает суммы, "
+            "подбирает реквизиты и формирует готовые блоки для отправки.\n\n"
+            "*Первый шаг: укажите своё имя.*\n"
+            "Без этого бот не сможет фильтровать строки по вашему листу. "
+            "Нажмите кнопку ниже и выберите своё имя из списка."
+        )
+    return (
+        f"Welcome, {name}!\n\n"
+        "This bot handles payouts for StarPets ambassadors. "
+        "You paste rows from the spreadsheet — the bot calculates totals, "
+        "finds the right payment details and produces ready-made blocks.\n\n"
+        "*First step: set your manager name.*\n"
+        "Without it the bot cannot filter rows by your sheet. "
+        "Tap the button below and select your name from the list."
     )
+
+
+def _onboarding_keyboard(lang: str) -> InlineKeyboardMarkup:
+    if lang == "ru":
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("👤 Выбрать имя", callback_data="set_mgr")],
+            [InlineKeyboardButton("📋 Инструкция", callback_data="show_help")],
+        ])
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("👤 Set my name", callback_data="set_mgr")],
+        [InlineKeyboardButton("📋 Instructions", callback_data="show_help")],
+    ])
 
 
 def _start_text(name: str, lang: str) -> str:
@@ -305,6 +353,97 @@ async def cb_sync_sheet_run(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+
+
+async def cb_delete_all_my_bloggers(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ask for confirmation before deleting all bloggers."""
+    query = update.callback_query
+    await query.answer()
+    user = await get_user(update.effective_user.id)
+    lang = get_lang(user) if user else "en"
+    from database.queries import get_bloggers_for_manager
+    bloggers = await get_bloggers_for_manager(user["id"])
+    count = len(bloggers)
+    if not count:
+        await query.edit_message_text(
+            "В базе нет блогеров для удаления." if lang == "ru"
+            else "No bloggers to delete.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("← Назад" if lang == "ru" else "← Back",
+                                     callback_data="show_settings")
+            ]])
+        )
+        return
+    if lang == "ru":
+        text = (
+            f"Вы уверены? Это удалит *{count} блогеров* из вашей базы в боте.\n\n"
+            "Данные в таблице Google Sheets останутся нетронутыми. "
+            "Блогеров можно будет снова добавить через синхронизацию или импорт."
+        )
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Да, удалить всех", callback_data="confirm_delete_all_bloggers")],
+            [InlineKeyboardButton("← Отмена", callback_data="show_settings")],
+        ])
+    else:
+        text = (
+            f"Are you sure? This will delete *{count} bloggers* from your database in the bot.\n\n"
+            "Your Google Sheets data will not be affected. "
+            "You can re-add bloggers later via sync or import."
+        )
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Yes, delete all", callback_data="confirm_delete_all_bloggers")],
+            [InlineKeyboardButton("← Cancel", callback_data="show_settings")],
+        ])
+    await query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
+
+
+async def cb_confirm_delete_all_bloggers(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Execute deletion after confirmation."""
+    query = update.callback_query
+    await query.answer()
+    user = await get_user(update.effective_user.id)
+    lang = get_lang(user) if user else "en"
+    from database.queries import get_bloggers_for_manager
+    import aiosqlite
+    from database.db import DB_PATH
+    bloggers = await get_bloggers_for_manager(user["id"])
+    count = len(bloggers)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE bloggers SET is_active = 0 WHERE manager_id = ?",
+            (user["id"],)
+        )
+        await db.commit()
+    log_info("ALL_BLOGGERS_DELETED", user_id=user["telegram_id"],
+             username=user["username"], count=count)
+    if lang == "ru":
+        text = f"Готово. Удалено {count} блогеров из вашей базы в боте."
+    else:
+        text = f"Done. {count} bloggers removed from your bot database."
+    await query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("← Настройки" if lang == "ru" else "← Settings",
+                                 callback_data="show_settings")
+        ]])
+    )
+
+
+async def cb_toggle_show_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user = await get_user(update.effective_user.id)
+    lang = get_lang(user) if user else "en"
+    new_val = not bool(user.get("show_all_bloggers", 0))
+    await set_show_all_bloggers(update.effective_user.id, new_val)
+    user = await get_user(update.effective_user.id)
+    await query.edit_message_text(
+        _settings_text(user, lang),
+        reply_markup=_settings_keyboard(user, lang),
+        parse_mode="Markdown",
+    )
+
+
 async def cb_show_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -378,6 +517,11 @@ def _settings_keyboard(user: dict, lang: str) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(f"PENDING: {'включать' if ipe else 'пропускать'}", callback_data="toggle_filter_pending"),
                 InlineKeyboardButton(f"Предупрежд.: {'вкл' if wpe else 'выкл'}", callback_data="toggle_warn_pending"),
             ],
+            [InlineKeyboardButton(
+                ("👁 Список: все импортированные" if user.get("show_all_bloggers") else "👁 Список: только мой лист"),
+                callback_data="toggle_show_all"
+            )],
+            [InlineKeyboardButton("🗑 Удалить всех моих блогеров", callback_data="delete_all_my_bloggers")],
             [InlineKeyboardButton("← Назад", callback_data="show_start")],
         ])
 
@@ -544,7 +688,8 @@ async def cb_mgr_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _apply_mgr_name(update, context, name: str, lang: str):
-    """Set manager filter and return to settings."""
+    """Set manager filter and return to settings or main screen (onboarding)."""
+    was_new = not (await get_user(update.effective_user.id) or {}).get("manager_filter")
     await set_manager_filter(update.effective_user.id, name)
     log_info("MGR_FILTER_SET", user_id=update.effective_user.id,
              username=update.effective_user.username, name=name)
@@ -555,6 +700,40 @@ async def _apply_mgr_name(update, context, name: str, lang: str):
     context.user_data.pop("awaiting_mgr_manual", None)
     context.user_data.pop("mgr_pending_name", None)
     context.user_data.pop("awaiting_mgr_pw", None)
+
+    tg = update.effective_user
+    role = "admin" if tg.id == ADMIN_ID else "manager"
+
+    # After onboarding name selection — show main screen with a prompt
+    if was_new:
+        confirm_text = (
+            f"Отлично, {tg.first_name}! Имя установлено: *{name}*\n\n"
+            "Теперь добавьте блогеров и укажите им методы оплаты. "
+            "После этого можно приступать к выплатам."
+            if lang == "ru" else
+            f"All set, {tg.first_name}! Manager name: *{name}*\n\n"
+            "Now add your bloggers and set their payment methods. "
+            "After that you can start processing payouts."
+        )
+        if msg_id:
+            try:
+                await update.bot.edit_message_text(
+                    chat_id=update.effective_chat.id,
+                    message_id=msg_id,
+                    text=confirm_text,
+                    reply_markup=_main_keyboard(lang, role),
+                    parse_mode="Markdown",
+                )
+                return
+            except Exception:
+                pass
+        await update.effective_chat.send_message(
+            confirm_text,
+            reply_markup=_main_keyboard(lang, role),
+            parse_mode="Markdown",
+        )
+        return
+
     if msg_id:
         try:
             await update.bot.edit_message_text(
@@ -562,6 +741,7 @@ async def _apply_mgr_name(update, context, name: str, lang: str):
                 message_id=msg_id,
                 text=_settings_text(user, lang),
                 reply_markup=_settings_keyboard(user, lang),
+                parse_mode="Markdown",
             )
             return
         except Exception:
@@ -1351,6 +1531,9 @@ def register_start_handlers(app):
     app.add_handler(CallbackQueryHandler(cb_show_start,      pattern=r"^show_start$"))
     app.add_handler(CallbackQueryHandler(cb_show_more,        pattern=r"^show_more$"))
     app.add_handler(CallbackQueryHandler(cb_sync_my_sheet,   pattern=r"^sync_my_sheet$"))
+    app.add_handler(CallbackQueryHandler(cb_toggle_show_all,           pattern=r"^toggle_show_all$"))
+    app.add_handler(CallbackQueryHandler(cb_delete_all_my_bloggers,      pattern=r"^delete_all_my_bloggers$"))
+    app.add_handler(CallbackQueryHandler(cb_confirm_delete_all_bloggers, pattern=r"^confirm_delete_all_bloggers$"))
     app.add_handler(CallbackQueryHandler(cb_sync_sheet_run,   pattern=r"^sync_sheet:"))
     app.add_handler(CallbackQueryHandler(cb_set_lang,        pattern=r"^set_lang:"))
     app.add_handler(CallbackQueryHandler(cb_set_mgr,             pattern=r"^set_mgr$"))
