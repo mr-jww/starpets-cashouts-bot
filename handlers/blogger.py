@@ -32,6 +32,7 @@ from telegram.ext import (
 )
 
 from database.queries import (
+    get_all_bloggers,
     get_recent_blogger_ids,
     get_user, add_blogger, get_bloggers_for_manager, get_bloggers_without_method,
     get_blogger_by_name, get_blogger_by_id, search_bloggers_by_prefix,
@@ -82,7 +83,11 @@ async def screen_list(target, user: dict, lang: str,
     - Pagination (PAGE_SIZE per page, 2 columns)
     - Add blogger + Home buttons
     """
-    all_bloggers = await get_bloggers_for_manager(user["id"])
+    show_all = bool(user.get("show_all_bloggers", 0))
+    if show_all:
+        all_bloggers = await get_all_bloggers()
+    else:
+        all_bloggers = await get_bloggers_for_manager(user["id"])
     total = len(all_bloggers)
 
     if not all_bloggers:

@@ -198,6 +198,7 @@ async def get_all_bloggers() -> list[dict]:
             """
             SELECT b.*, u.username AS manager_username
             FROM bloggers b JOIN users u ON b.manager_id = u.id
+            WHERE b.is_active = 1
             ORDER BY b.name
             """
         ) as cur:
@@ -476,6 +477,26 @@ async def set_filter_setting(telegram_id: int, field: str, value: int) -> None:
             (value, telegram_id),
         )
         await db.commit()
+
+
+
+async def set_show_all_bloggers(telegram_id: int, value: bool) -> None:
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE users SET show_all_bloggers = ? WHERE telegram_id = ?",
+            (1 if value else 0, telegram_id),
+        )
+        await db.commit()
+
+
+async def get_show_all_bloggers(telegram_id: int) -> bool:
+    async with get_db() as db:
+        async with db.execute(
+            "SELECT show_all_bloggers FROM users WHERE telegram_id = ?",
+            (telegram_id,)
+        ) as cur:
+            row = await cur.fetchone()
+            return bool(row[0]) if row else False
 
 
 async def set_default_fmt(telegram_id: int, fmt: str) -> None:
