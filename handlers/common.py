@@ -30,7 +30,7 @@ async def get_user_or_reject(update: Update) -> dict | None:
 
 
 def get_lang(user: dict) -> str:
-    return user.get("lang", "ru")
+    return user.get("lang", "en")
 
 
 def is_admin(telegram_id: int) -> bool:

@@ -62,9 +62,9 @@ def payout_warning(method_type: str, amount_str: str, lang: str) -> str:
     if amount < minimum:
         label = "PayPal" if method_type == "paypal" else "USDT-TRC20"
         if lang == "ru":
-            return f"Сумма выплаты ({amount_str}) ниже минимума для {label}. Минимальная сумма: ${minimum:.0f}."
+            return f"⚠️ Сумма выплаты ({amount_str}) ниже минимума для {label}. Минимум: ${minimum:.0f}."
         else:
-            return f"Payout amount ({amount_str}) is below the minimum for {label}. Minimum: ${minimum:.0f}."
+            return f"⚠️ Payout amount ({amount_str}) is below the minimum for {label}. Minimum: ${minimum:.0f}."
     return ""
 
 

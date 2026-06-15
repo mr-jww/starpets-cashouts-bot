@@ -1286,7 +1286,10 @@ async def reformat_got_block(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user = context.user_data.get("rf_user") or await get_user(update.effective_user.id)
     output_mode = (user.get("output_mode") or "block") if user else "block"
     # Build alternate-language versions
-    alt_lang = "en" if lang == "ru" else "ru"
+    # Block language is always RU (для/за/пр.) regardless of interface lang
+    import re as _re
+    block_lang = "ru" if _re.search(r" для .+ за \d+", oneline) else "en"
+    alt_lang = "en" if block_lang == "ru" else "ru"
     oneline_alt   = _translate_rf_block(oneline, alt_lang)
     multiline_alt = _translate_rf_block(multiline, alt_lang)
 
@@ -1295,7 +1298,7 @@ async def reformat_got_block(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data["rf_oneline_alt"]   = oneline_alt
     context.user_data["rf_multiline_alt"] = multiline_alt
     context.user_data["rf_fmt"]           = "oneline"
-    context.user_data["rf_lang"]          = lang
+    context.user_data["rf_lang"]          = block_lang
     context.user_data["rf_output_mode"]   = output_mode
 
     context.user_data["_rf_just_done"] = True

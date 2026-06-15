@@ -563,18 +563,34 @@ async def _finish_payout(eff, context, lang: str):
         )
 
     has_any_errors = any(br.has_errors for br, _ in known)
+
+    # Count warnings (below minimum)
+    warn_count = sum(
+        1 for br, _ in known
+        if (data := context.user_data.get(_storage_key(br.blogger)))
+        and payout_warning(data["method_type"], br.total_price_display, lang)
+    )
+
+    error_count = sum(1 for br, _ in known if br.has_errors)
+
     if lang == "ru":
-        summary = (
-            f"Готово. Сформировано {len(all_texts)} выплат. Часть строк содержит ошибки — проверь сводку выше."
-            if has_any_errors else
-            f"Готово. Сформировано {len(all_texts)} выплат."
-        )
+        lines = [f"Готово. Сформировано {len(all_texts)} выплат."]
+        if error_count:
+            lines.append(f"⚠️ Ошибки в строках: {error_count}")
+        if warn_count:
+            lines.append(f"⚠️ Ниже минимума выплаты: {warn_count}")
+        if skipped:
+            lines.append(f"⚠️ Пропущено (нет метода оплаты): {len(skipped)}")
+        summary = "\n".join(lines)
     else:
-        summary = (
-            f"Done. {len(all_texts)} payout(s) generated. Some rows contain errors — check the summary above."
-            if has_any_errors else
-            f"Done. {len(all_texts)} payout(s) generated."
-        )
+        lines = [f"Done. {len(all_texts)} payout(s) generated."]
+        if error_count:
+            lines.append(f"⚠️ Row errors: {error_count}")
+        if warn_count:
+            lines.append(f"⚠️ Below minimum: {warn_count}")
+        if skipped:
+            lines.append(f"⚠️ Skipped (no payment method): {len(skipped)}")
+        summary = "\n".join(lines)
     await eff.reply_text(summary, reply_markup=_nav_keyboard(lang))
     return ConversationHandler.END
 
