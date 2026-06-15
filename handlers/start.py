@@ -61,6 +61,13 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
+def _md_escape(text: str) -> str:
+    """Escape Markdown v1 special characters in user-provided strings."""
+    for ch in ("_", "*", "`", "["):
+        text = text.replace(ch, f"\\{ch}")
+    return text
+
+
 def _is_new_user(user: dict) -> bool:
     """True if user has never set a manager name."""
     return not user.get("manager_filter")
@@ -69,7 +76,7 @@ def _is_new_user(user: dict) -> bool:
 def _onboarding_text(name: str, lang: str) -> str:
     if lang == "ru":
         return (
-            f"Добро пожаловать, {name}!\n\n"
+            f"Добро пожаловать, {_md_escape(name)}!\n\n"
             "Этот бот помогает оформлять выплаты амбассадорам StarPets. "
             "Вы вставляете строки из таблицы — бот считает суммы, "
             "подбирает реквизиты и формирует готовые блоки для отправки.\n\n"
@@ -78,7 +85,7 @@ def _onboarding_text(name: str, lang: str) -> str:
             "Нажмите кнопку ниже и выберите своё имя из списка."
         )
     return (
-        f"Welcome, {name}!\n\n"
+        f"Welcome, {_md_escape(name)}!\n\n"
         "This bot handles payouts for StarPets ambassadors. "
         "You paste rows from the spreadsheet — the bot calculates totals, "
         "finds the right payment details and produces ready-made blocks.\n\n"
@@ -103,7 +110,7 @@ def _onboarding_keyboard(lang: str) -> InlineKeyboardMarkup:
 def _start_text(name: str, lang: str) -> str:
     if lang == "ru":
         return (
-            f"Привет, {name}!\n\n"
+            f"Привет, {_md_escape(name)}!\n\n"
             "Этот бот помогает оформлять выплаты амбассадорам StarPets.\n\n"
             "Принцип простой: ты вставляешь строки из таблицы, "
             "бот сам разбирает блогеров, считает суммы и формирует готовые блоки для отправки. "
@@ -115,7 +122,7 @@ def _start_text(name: str, lang: str) -> str:
             "4. Нажмите _Заказать выплату_ и вставьте строки из таблицы."
         )
     return (
-        f"Hi, {name}!\n\n"
+        f"Hi, {_md_escape(name)}!\n\n"
         "This bot handles payouts for StarPets ambassadors.\n\n"
         "The idea is simple: you paste rows from the spreadsheet, "
         "the bot parses each blogger, totals up the amounts and produces ready-made payout blocks. "
@@ -543,6 +550,11 @@ def _settings_keyboard(user: dict, lang: str) -> InlineKeyboardMarkup:
             InlineKeyboardButton(f"PENDING: {'include' if ipe else 'skip'}", callback_data="toggle_filter_pending"),
             InlineKeyboardButton(f"Warn: {'on' if wpe else 'off'}", callback_data="toggle_warn_pending"),
         ],
+        [InlineKeyboardButton(
+            ("👁 List: all imported" if user.get("show_all_bloggers") else "👁 List: my sheet only"),
+            callback_data="toggle_show_all"
+        )],
+        [InlineKeyboardButton("🗑 Delete all my bloggers", callback_data="delete_all_my_bloggers")],
         [InlineKeyboardButton("← Back", callback_data="show_start")],
     ])
 
@@ -707,11 +719,11 @@ async def _apply_mgr_name(update, context, name: str, lang: str):
     # After onboarding name selection — show main screen with a prompt
     if was_new:
         confirm_text = (
-            f"Отлично, {tg.first_name}! Имя установлено: *{name}*\n\n"
+            f"Отлично, {_md_escape(tg.first_name)}! Имя установлено: *{_md_escape(name)}*\n\n"
             "Теперь добавьте блогеров и укажите им методы оплаты. "
             "После этого можно приступать к выплатам."
             if lang == "ru" else
-            f"All set, {tg.first_name}! Manager name: *{name}*\n\n"
+            f"All set, {_md_escape(tg.first_name)}! Manager name: *{_md_escape(name)}*\n\n"
             "Now add your bloggers and set their payment methods. "
             "After that you can start processing payouts."
         )
@@ -1204,7 +1216,7 @@ def _translate_rf_block(text: str, target_lang: str) -> str:
     if target_lang == "en":
         # $X для NAME за N видео по GAME: → $X for NAME for N video for GAME:
         result = re.sub(
-            r"\$([\d,\.]+) для ([^з]+) за (\d+) (?:видео|вид\.) по ([^:]+):",
+            r"\$(\d[\d,\.]*) для ([^з]+) за (\d+) (?:видео|вид\.) по ([^:]+):",
             lambda m: f"${m.group(1)} for {m.group(2).strip()} for {m.group(3)} video for {m.group(4).strip()}:",
             result
         )
@@ -1213,7 +1225,7 @@ def _translate_rf_block(text: str, target_lang: str) -> str:
     else:  # ru
         # $X for NAME for N video for GAME: → $X для NAME за N видео по GAME:
         result = re.sub(
-            r"\$([\d,\.]+) for ([^f]+) for (\d+) video for ([^:]+):",
+            r"\$(\d[\d,\.]*) for ([^f]+) for (\d+) video for ([^:]+):",
             lambda m: f"${m.group(1)} для {m.group(2).strip()} за {m.group(3)} видео по {m.group(4).strip()}:",
             result
         )
