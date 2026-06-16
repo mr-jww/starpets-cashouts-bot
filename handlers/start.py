@@ -456,6 +456,7 @@ async def cb_show_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     user = await get_user(update.effective_user.id)
     lang = get_lang(user) if user else "en"
+    await _universal_cancel(update, context)
     await query.edit_message_text(
         _settings_text(user, lang),
         reply_markup=_settings_keyboard(user, lang),
@@ -627,16 +628,8 @@ async def cb_mgr_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await get_user(update.effective_user.id)
     lang = get_lang(user) if user else "en"
 
-    # Warn if payout is active
-    _payout_active = any(k.startswith("pd_") or k in ("known", "unknown", "payout_raw")
-                         for k in context.user_data)
-    if _payout_active:
-        await query.answer(
-            "Сначала завершите текущую выплату" if lang == "ru"
-            else "Finish the current payout first",
-            show_alert=True
-        )
-        return
+    # Switching manager identity always cancels any stuck conversation state
+    await _universal_cancel(update, context)
 
     name = query.data.split(":", 1)[1]
     context.user_data["mgr_pending_name"] = name
@@ -859,8 +852,30 @@ async def handle_mgr_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await get_user(update.effective_user.id)
     lang = get_lang(user) if user else "en"
     name = update.message.text.strip()
+
+    # Manually typed name matching a protected manager name requires the
+    # team password too — closes the bypass where typing "John" skipped auth.
+    matched = next(
+        (n for n in MANAGER_BUTTON_ORDER if n.lower() == name.lower()), None
+    )
+    if matched and not (user and user.get("mgr_password")) and not context.user_data.get("team_confirmed"):
+        context.user_data.pop("awaiting_mgr", None)
+        context.user_data.pop("awaiting_mgr_manual", None)
+        context.user_data["mgr_pending_name"] = matched
+        context.user_data["awaiting_mgr_pw"] = True
+        if lang == "ru":
+            await update.message.reply_text(
+                f"Выбрано: {matched}\n\nВведите командный пароль для подтверждения:"
+            )
+        else:
+            await update.message.reply_text(
+                f"Selected: {matched}\n\nEnter the team password to confirm:"
+            )
+        return
+
     await set_manager_filter(update.effective_user.id, name)
     context.user_data.pop("awaiting_mgr", None)
+    context.user_data.pop("awaiting_mgr_manual", None)
     await db_log(user["id"], "MGR_FILTER_SET", f"name={name}")
     log_info("MGR_FILTER_SET", user_id=user["telegram_id"], username=user["username"], name=name)
     if lang == "ru":
@@ -1536,6 +1551,15 @@ def register_start_handlers(app):
             CommandHandler("settings",          _universal_cancel),
             CommandHandler("import_bloggers",   _universal_cancel),
             MessageHandler(filters.Regex(r"^(🏠|💸|👥|⚙️)"), _universal_cancel),
+            CallbackQueryHandler(_universal_cancel, pattern=r"^show_settings$"),
+            CallbackQueryHandler(_universal_cancel, pattern=r"^show_start$"),
+            CallbackQueryHandler(_universal_cancel, pattern=r"^show_more$"),
+            CallbackQueryHandler(_universal_cancel, pattern=r"^set_mgr$"),
+            CallbackQueryHandler(_universal_cancel, pattern=r"^mgr_pick:"),
+            CallbackQueryHandler(_universal_cancel, pattern=r"^mgr_manual$"),
+            CallbackQueryHandler(_universal_cancel, pattern=r"^mgr_clear$"),
+            CallbackQueryHandler(_universal_cancel, pattern=r"^start_payout$"),
+            CallbackQueryHandler(_universal_cancel, pattern=r"^go_import$"),
         ],
         conversation_timeout=300,
     ))
