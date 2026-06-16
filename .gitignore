@@ -11,6 +11,7 @@ venv/
 # Data, backups, logs, documentation
 data/
 backups/
+sheets_backups/
 logs/
 docs/
 

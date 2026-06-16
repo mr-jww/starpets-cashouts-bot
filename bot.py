@@ -169,7 +169,24 @@ def setup_scheduler(app: Application):
         minute=0,
         id="daily_sheets_sync",
     )
-    log_system("SCHEDULER_STARTED", job="daily_backup at 03:00, sheets_sync at 04:00")
+
+    async def _daily_sheets_snapshot():
+        from services.sheets_snapshot import save_daily_snapshot
+        try:
+            path = save_daily_snapshot()
+            log_system("SHEETS_SNAPSHOT_DONE", path=path)
+        except Exception as e:
+            log_system("SHEETS_SNAPSHOT_ERROR", error=str(e))
+
+    scheduler.add_job(
+        _daily_sheets_snapshot,
+        trigger="cron",
+        hour=4,
+        minute=30,
+        id="daily_sheets_snapshot",
+    )
+    log_system("SCHEDULER_STARTED",
+               job="daily_backup at 03:00, sheets_sync at 04:00, sheets_snapshot at 04:30")
 
 
 # --------------------------------------------------------------------------- #
