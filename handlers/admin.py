@@ -95,6 +95,9 @@ def _admin_main_kb(lang: str) -> InlineKeyboardMarkup:
             InlineKeyboardButton("📥 Download DB",      callback_data="adm:dl_db"),
         ],
         [InlineKeyboardButton("♻️ Restore DB",          callback_data="adm:restore_prompt")],
+        [InlineKeyboardButton("📊 Export to xlsx",       callback_data="adm:export")],
+        [InlineKeyboardButton("🔄 Sync Google Sheets",   callback_data="adm:sync_sheets")],
+        [InlineKeyboardButton("📥 Download SPBBB table", callback_data="adm:dl_sheet_prompt")],
     ])
 
 
@@ -350,6 +353,92 @@ async def cb_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == "export":
         from handlers.export_xlsx import _do_export
         await _do_export(update, context, lang)
+        return
+
+    # ---- DOWNLOAD SHEET: choice prompt ----
+    elif action == "dl_sheet_prompt":
+        if lang == "ru":
+            text = "Какую версию таблицы SPBBB скачать?"
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔴 Текущую (живую)", callback_data="adm:dl_sheet_live")],
+                [InlineKeyboardButton("📦 Из резервной копии", callback_data="adm:dl_sheet_backups")],
+                [InlineKeyboardButton("← Назад", callback_data="adm:main")],
+            ])
+        else:
+            text = "Which version of the SPBBB table do you want?"
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔴 Current (live)", callback_data="adm:dl_sheet_live")],
+                [InlineKeyboardButton("📦 From backup", callback_data="adm:dl_sheet_backups")],
+                [InlineKeyboardButton("← Back", callback_data="adm:main")],
+            ])
+        await query.edit_message_text(text, reply_markup=kb)
+        return
+
+    # ---- DOWNLOAD SHEET: live snapshot ----
+    elif action == "dl_sheet_live":
+        await query.edit_message_text(
+            "Читаю таблицу и формирую файл, подождите..." if lang == "ru"
+            else "Reading the spreadsheet and building the file, please wait..."
+        )
+        from services.sheets_snapshot import _build_snapshot_xlsx
+        import io as _io
+        try:
+            data = _build_snapshot_xlsx()
+        except Exception as e:
+            await query.message.reply_text(
+                f"Не удалось прочитать таблицу: {e}" if lang == "ru" else f"Could not read the spreadsheet: {e}"
+            )
+            return
+        ts = __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S")
+        await query.message.reply_document(
+            read_timeout=120, write_timeout=120,
+            document=_io.BytesIO(data),
+            filename=f"SPBBB_live_{ts}.xlsx",
+            caption="Текущая версия таблицы SPBBB" if lang == "ru" else "Current SPBBB table",
+        )
+        return
+
+    # ---- DOWNLOAD SHEET: list backups ----
+    elif action == "dl_sheet_backups":
+        from services.sheets_snapshot import list_snapshots
+        snaps = list_snapshots(limit=10)
+        if not snaps:
+            await query.edit_message_text(
+                "Резервных копий пока нет." if lang == "ru" else "No backups yet.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("← Назад" if lang == "ru" else "← Back", callback_data="adm:main")
+                ]])
+            )
+            return
+        rows = []
+        for path, mtime, size in snaps:
+            label = f"{mtime.strftime('%d.%m.%Y %H:%M')} · {size // 1024} KB"
+            rows.append([InlineKeyboardButton(label, callback_data=f"adm:dl_sheet_backup:{os.path.basename(path)}")])
+        rows.append([InlineKeyboardButton("← Назад" if lang == "ru" else "← Back", callback_data="adm:main")])
+        await query.edit_message_text(
+            "Выберите резервную копию:" if lang == "ru" else "Select a backup:",
+            reply_markup=InlineKeyboardMarkup(rows)
+        )
+        return
+
+    # ---- DOWNLOAD SHEET: send chosen backup ----
+    elif action == "dl_sheet_backup":
+        from services.sheets_snapshot import SHEETS_BACKUP_DIR
+        fname = arg
+        path = os.path.join(SHEETS_BACKUP_DIR, fname)
+        if not os.path.isfile(path):
+            await query.answer(
+                "Файл не найден." if lang == "ru" else "File not found.",
+                show_alert=True
+            )
+            return
+        with open(path, "rb") as f:
+            await query.message.reply_document(
+                read_timeout=120, write_timeout=120,
+                document=f,
+                filename=fname,
+                caption="Резервная копия таблицы SPBBB" if lang == "ru" else "SPBBB table backup",
+            )
         return
 
     # ---- SEARCH RESULT ----
