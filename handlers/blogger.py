@@ -718,6 +718,8 @@ async def cb_bm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         method_id  = int(parts[2])
         blogger_id = int(parts[3])
         await set_primary_method(method_id, blogger_id)
+        log_info("METHOD_SET_PRIMARY", user_id=user["telegram_id"] if user else 0,
+                 username=user["username"] if user else "", method_id=method_id, blogger_id=blogger_id)
         await db_log(user["id"] if user else None, "METHOD_SET_PRIMARY", f"method_id={method_id}")
         await screen_method(query, method_id, blogger_id, lang)
 
@@ -726,10 +728,13 @@ async def cb_bm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         method_id  = int(parts[2])
         blogger_id = int(parts[3])
         m = await get_method_by_id(method_id)
+        new_state = "disabled" if m["is_active"] else "enabled"
         if m["is_active"]:
             await deactivate_method(method_id)
         else:
             await reactivate_method(method_id)
+        log_info("METHOD_TOGGLED", user_id=user["telegram_id"] if user else 0,
+                 username=user["username"] if user else "", method_id=method_id, state=new_state)
         await db_log(user["id"] if user else None, "METHOD_TOGGLED", f"method_id={method_id}")
         await screen_method(query, method_id, blogger_id, lang)
 
@@ -797,6 +802,8 @@ async def cb_bm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         method_id  = int(parts[2])
         blogger_id = int(parts[3])
         await deactivate_method(method_id)
+        log_info("METHOD_DEACTIVATED", user_id=user["telegram_id"] if user else 0,
+                 username=user["username"] if user else "", method_id=method_id, blogger_id=blogger_id)
         await db_log(user["id"] if user else None, "METHOD_DEACTIVATED", f"method_id={method_id}")
         await screen_blogger(query, blogger_id, lang)
 
