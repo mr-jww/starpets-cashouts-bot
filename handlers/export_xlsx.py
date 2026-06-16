@@ -14,10 +14,11 @@ from telegram import Update
 from telegram.ext import ContextTypes, CommandHandler, CallbackQueryHandler
 
 from database.queries import (
-    get_user, get_all_bloggers, get_active_methods,
+    get_user, get_all_bloggers, get_active_methods, db_log,
     get_all_method_history, METHOD_LABELS,
 )
 from handlers.common import admin_only, get_lang
+from services.logger import log_info
 from config import ADMIN_ID
 
 try:
@@ -177,6 +178,14 @@ async def _do_export(update, context, lang: str):
     ts    = datetime.now().strftime("%Y%m%d_%H%M%S")
     fname = f"ambassadors_base_{ts}.xlsx"
     total = sum(len(v) for k, v in data.items() if k != "All")
+
+    tg = update.effective_user
+    log_info("EXPORT_XLSX", user_id=tg.id, username=tg.username,
+             bloggers=len(data["All"]), managers=len(data) - 1)
+    user = await get_user(tg.id)
+    if user:
+        await db_log(user["id"], "EXPORT_XLSX",
+                     f"bloggers={len(data['All'])} | managers={len(data)-1}")
 
     await update.effective_chat.send_document(
         document=io.BytesIO(xlsx),

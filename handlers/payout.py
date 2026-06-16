@@ -508,7 +508,9 @@ async def quick_address_input(update: Update, context: ContextTypes.DEFAULT_TYPE
                 )
                 log_info("PAYOUT_CREATED", user_id=user["telegram_id"],
                          username=user["username"], blogger=blogger_name,
-                         amount=blogger_result.total_price_display, method=method_type)
+                         amount=blogger_result.total_price_display, method=method_type,
+                         videos=blogger_result.video_count, has_errors=blogger_result.has_errors,
+                         manager_filter=user.get("manager_filter") or "")
                 break
 
     # Show next in no_method queue or finish
@@ -649,7 +651,9 @@ async def _process_known(target, context):
         )
         log_info("PAYOUT_CREATED", user_id=user["telegram_id"], username=user["username"],
                  blogger=blogger_result.blogger, amount=blogger_result.total_price_display,
-                 method=method["type"])
+                 method=method["type"], videos=blogger_result.video_count,
+                 has_errors=blogger_result.has_errors,
+                 manager_filter=user.get("manager_filter") or "")
         await db_log(user["id"], "PAYOUT_CREATED",
                      f"blogger={blogger_result.blogger} | amount={blogger_result.total_price_display}")
 

@@ -43,10 +43,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await upsert_user(tg.id, tg.username, role)
     lang = get_lang(user)
 
-    log_info("START", user_id=tg.id, username=tg.username, role=role)
-    await db_log(user["id"], "START", f"role={role}")
+    is_new = _is_new_user(user)
+    log_info("START", user_id=tg.id, username=tg.username, role=role, new_user=is_new)
+    await db_log(user["id"], "START", f"role={role} | new_user={is_new}")
 
-    if _is_new_user(user) and role != "admin":
+    if is_new and role != "admin":
         await update.message.reply_text(
             _onboarding_text(tg.first_name, lang),
             reply_markup=_onboarding_keyboard(lang),
@@ -341,6 +342,10 @@ async def cb_sync_sheet_run(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         else:
             result = await sync_sheets_to_db(mgr_name, rows, user["id"], mode=mode)
+            log_info("SHEET_SYNC_MANUAL", user_id=user["telegram_id"], username=user["username"],
+                     sheet=mgr_name, mode=mode, added=len(result.added), errors=len(result.errors))
+            await db_log(user["id"], "SHEET_SYNC_MANUAL",
+                         f"sheet={mgr_name} | mode={mode} | added={len(result.added)} | errors={len(result.errors)}")
             if lang == "ru":
                 text = (
                     f"Синхронизация завершена. Добавлено: {len(result.added)}."
@@ -443,6 +448,8 @@ async def cb_toggle_show_all(update: Update, context: ContextTypes.DEFAULT_TYPE)
     lang = get_lang(user) if user else "en"
     new_val = not bool(user.get("show_all_bloggers", 0))
     await set_show_all_bloggers(update.effective_user.id, new_val)
+    log_info("SETTING_CHANGED", user_id=update.effective_user.id,
+             username=update.effective_user.username, setting="show_all_bloggers", value=new_val)
     user = await get_user(update.effective_user.id)
     await query.edit_message_text(
         _settings_text(user, lang),
@@ -782,6 +789,8 @@ async def handle_mgr_pw_input(update: Update, context: ContextTypes.DEFAULT_TYPE
         from database.queries import set_manager_password
         await set_manager_password(update.effective_user.id, "confirmed")
         context.user_data["team_confirmed"] = True
+        log_info("MGR_PASSWORD_CONFIRMED", user_id=update.effective_user.id,
+                 username=update.effective_user.username, name=name)
         await _apply_mgr_name(update, context, name, lang)
         return True
 
@@ -789,6 +798,9 @@ async def handle_mgr_pw_input(update: Update, context: ContextTypes.DEFAULT_TYPE
     attempts = context.user_data.get("mgr_pw_attempts", 0) + 1
     context.user_data["mgr_pw_attempts"] = attempts
     remaining = 5 - attempts
+    log_info("MGR_PASSWORD_WRONG", user_id=update.effective_user.id,
+             username=update.effective_user.username, name=name,
+             attempt=attempts, remaining=remaining)
 
     if remaining <= 0:
         context.user_data.pop("awaiting_mgr_pw", None)
@@ -813,6 +825,8 @@ async def handle_mgr_pw_input(update: Update, context: ContextTypes.DEFAULT_TYPE
                 )
             except Exception:
                 pass
+        log_info("MGR_PASSWORD_LOCKOUT", user_id=update.effective_user.id,
+                 username=update.effective_user.username, name=name)
         # Notify admin
         from config import ADMIN_ID as _ADMIN_ID
         try:
@@ -984,7 +998,8 @@ async def cb_toggle_output_mode(update: Update, context: ContextTypes.DEFAULT_TY
     current = user.get("output_mode") or "block"
     new_mode = "text" if current == "block" else "block"
     await set_output_mode(update.effective_user.id, new_mode)
-    user["output_mode"] = new_mode
+    log_info("SETTING_CHANGED", user_id=update.effective_user.id,
+             username=update.effective_user.username, setting="output_mode", value=new_mode)
     user["output_mode"] = new_mode
     await query.edit_message_text(
         _settings_text(user, lang),
@@ -1002,6 +1017,8 @@ async def cb_toggle_default_fmt(update: Update, context: ContextTypes.DEFAULT_TY
     current = user.get("default_fmt") or "oneline"
     new_fmt = "multiline" if current == "oneline" else "oneline"
     await set_default_fmt(update.effective_user.id, new_fmt)
+    log_info("SETTING_CHANGED", user_id=update.effective_user.id,
+             username=update.effective_user.username, setting="default_fmt", value=new_fmt)
     user["default_fmt"] = new_fmt
     await query.edit_message_text(
         _settings_text(user, lang),
@@ -1078,8 +1095,11 @@ async def cb_toggle_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     default = 1 if field.startswith("warn_") else 0
     current = bool(user.get(field, default))
-    await set_filter_setting(update.effective_user.id, field, 0 if current else 1)
-    user[field] = 0 if current else 1
+    new_val = 0 if current else 1
+    await set_filter_setting(update.effective_user.id, field, new_val)
+    log_info("SETTING_CHANGED", user_id=update.effective_user.id,
+             username=update.effective_user.username, setting=field, value=new_val)
+    user[field] = new_val
     await query.edit_message_text(
         _settings_text(user, lang),
         reply_markup=_settings_keyboard(user, lang),
@@ -1315,6 +1335,9 @@ async def reformat_got_block(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data["rf_fmt"]           = "oneline"
     context.user_data["rf_lang"]          = block_lang
     context.user_data["rf_output_mode"]   = output_mode
+
+    log_info("REFORMAT_USED", user_id=update.effective_user.id,
+             username=update.effective_user.username, input_format="multiline" if is_multiline_input else "oneline")
 
     context.user_data["_rf_just_done"] = True
     await _send_rf_block(update.message, oneline, "oneline", lang, output_mode=output_mode)
