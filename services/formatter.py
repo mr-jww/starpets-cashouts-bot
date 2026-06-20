@@ -28,7 +28,7 @@ def _header(result: BloggerResult, lang: str) -> str:
         )
     return (
         f"{result.total_price_display} for {result.blogger} "
-        f"for {result.video_count} videos on {games_str}:"
+        f"for {result.video_count} video for {games_str}:"
     )
 
 

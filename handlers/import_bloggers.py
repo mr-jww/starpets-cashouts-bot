@@ -31,7 +31,6 @@ from database.queries import (
 )
 from services.logger import log_info
 from handlers.start import _universal_cancel
-from handlers.start import _universal_cancel
 from handlers.common import get_user_or_reject, get_lang, nav_keyboard
 
 WAIT_DATA = 0
@@ -516,66 +515,6 @@ async def _handle_parsed_text(text: str, update: Update, context: ContextTypes.D
             [InlineKeyboardButton("✕ Cancel", callback_data="ib_cancel")],
         ])
     await update.effective_message.reply_text(text, reply_markup=kb)
-    return WAIT_CONFIRM
-
-    suspicious = is_suspicious(changes)
-    plan_text  = format_plan_summary(changes, lang)
-
-    # Show invalid rows if any
-    skip_text = ""
-    if invalid:
-        skip_lines = [("\nПропускаются:" if lang == "ru" else "\nSkipped:")]
-        for pr in invalid:
-            skip_lines.append(f"  ✗ {pr.row.name}: {pr.error}")
-        skip_text = "\n".join(skip_lines)
-
-    if suspicious:
-        # Count how many primary methods change
-        existing    = [c for c in changes if not c.is_new]
-        changed_cnt = sum(1 for c in existing if c.primary_changed)
-        pct         = int(changed_cnt / len(existing) * 100) if existing else 0
-
-        if lang == "ru":
-            warn = (
-                f"⚠️ У {changed_cnt} из {len(existing)} уже существующих блогеров "
-                f"основной метод оплаты изменится ({pct}%). "
-                f"Это выше нормы – скорее всего, что-то не так с данными. "
-                f"Перепроверь перед тем как продолжить.\n\n"
-            )
-            confirm_text = warn + plan_text + skip_text
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("✓ Всё верно, применить", callback_data="ib_confirm")],
-                [InlineKeyboardButton("✗ Отмена",               callback_data="ib_cancel")],
-            ])
-        else:
-            warn = (
-                f"⚠️ {changed_cnt} out of {len(existing)} existing bloggers "
-                f"would have their primary payment method changed ({pct}%). "
-                f"This is unusually high – likely something is wrong with the data. "
-                f"Please double-check before continuing.\n\n"
-            )
-            confirm_text = warn + plan_text + skip_text
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("✓ Looks correct, apply", callback_data="ib_confirm")],
-                [InlineKeyboardButton("✗ Cancel",               callback_data="ib_cancel")],
-            ])
-        await _send_chunked(update.effective_message, confirm_text, kb)
-        return WAIT_CONFIRM
-
-    # No suspicion — still show plan and ask for confirmation
-    if lang == "ru":
-        header = f"Готово к импорту ({len(changes)} блогеров):\n\n"
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✓ Применить", callback_data="ib_confirm")],
-            [InlineKeyboardButton("✗ Отмена",    callback_data="ib_cancel")],
-        ])
-    else:
-        header = f"Ready to import ({len(changes)} bloggers):\n\n"
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✓ Apply",  callback_data="ib_confirm")],
-            [InlineKeyboardButton("✗ Cancel", callback_data="ib_cancel")],
-        ])
-    await _send_chunked(update.effective_message, header + plan_text + skip_text, kb)
     return WAIT_CONFIRM
 
 
