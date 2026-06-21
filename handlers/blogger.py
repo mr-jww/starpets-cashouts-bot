@@ -375,6 +375,22 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Let fallback handle the nav button normally
         return
 
+    # A spreadsheet paste is never a blogger name, address or search query.
+    # If stale input state lingers (e.g. an abandoned search prompt), don't
+    # capture the paste — clear the state and ignore it, so payout rows are
+    # not echoed back as a blogger search.
+    _low = text_raw.lower()
+    is_table_paste = (
+        "\t" in text_raw
+        or ("http" in _low and any(c in text_raw for c in "$€₽"))
+    )
+    if action != "edit_note":
+        is_table_paste = is_table_paste or "\n" in text_raw
+    if is_table_paste:
+        context.user_data.pop("bm_action", None)
+        context.user_data.pop("bm_prompt_msg_id", None)
+        return
+
     user = await get_user(update.effective_user.id)
     lang = get_lang(user) if user else "en"
     text = update.message.text.strip()
