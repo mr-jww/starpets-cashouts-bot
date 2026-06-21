@@ -10,7 +10,8 @@ from telegram.ext import (
 )
 
 from database.queries import (
-    set_show_all_bloggers, get_show_all_bloggers, upsert_user, get_user, set_user_lang, set_manager_filter,
+    set_show_all_bloggers, get_show_all_bloggers, set_include_no_method,
+    upsert_user, get_user, set_user_lang, set_manager_filter,
     set_output_mode, set_default_fmt, set_filter_setting, db_log,
     set_manager_password, check_manager_password, reset_lockout, get_locked_users)
 from services.logger import log_info
@@ -458,6 +459,23 @@ async def cb_toggle_show_all(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
 
 
+async def cb_toggle_include_no_method(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user = await get_user(update.effective_user.id)
+    lang = get_lang(user) if user else "en"
+    new_val = not bool(user.get("include_no_method", 0))
+    await set_include_no_method(update.effective_user.id, new_val)
+    log_info("SETTING_CHANGED", user_id=update.effective_user.id,
+             username=update.effective_user.username, setting="include_no_method", value=new_val)
+    user = await get_user(update.effective_user.id)
+    await query.edit_message_text(
+        _settings_text(user, lang),
+        reply_markup=_settings_keyboard(user, lang),
+        parse_mode="Markdown",
+    )
+
+
 async def cb_show_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -484,6 +502,7 @@ def _settings_text(user: dict, lang: str) -> str:
     wp  = bool(user.get("warn_paid",       1))
     ipe = bool(user.get("include_pending", 0))
     wpe = bool(user.get("warn_pending",    1))
+    inm = bool(user.get("include_no_method", 0))
     if lang == "ru":
         return (
             f"*Настройки*\n\n"
@@ -492,7 +511,8 @@ def _settings_text(user: dict, lang: str) -> str:
             f"Оформление блоков: {out_label}\n"
             f"Формат выплаты: {fmt_label}\n"
             f"Строки PAID: {'включать' if ip else 'пропускать'} / предупреждать: {'да' if wp else 'нет'}\n"
-            f"Строки PENDING: {'включать' if ipe else 'пропускать'} / предупреждать: {'да' if wpe else 'нет'}"
+            f"Строки PENDING: {'включать' if ipe else 'пропускать'} / предупреждать: {'да' if wpe else 'нет'}\n"
+            f"Блогеры без реквизитов: {'считать' if inm else 'пропускать'}"
         )
     return (
         f"*Settings*\n\n"
@@ -501,7 +521,8 @@ def _settings_text(user: dict, lang: str) -> str:
         f"Output style: {out_label}\n"
         f"Payout format: {fmt_label}\n"
         f"PAID rows: {'include' if ip else 'skip'} / warn: {'yes' if wp else 'no'}\n"
-        f"PENDING rows: {'include' if ipe else 'skip'} / warn: {'yes' if wpe else 'no'}"
+        f"PENDING rows: {'include' if ipe else 'skip'} / warn: {'yes' if wpe else 'no'}\n"
+        f"Bloggers without details: {'include' if inm else 'skip'}"
     )
 
 
@@ -533,6 +554,10 @@ def _settings_keyboard(user: dict, lang: str) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(f"Предупрежд.: {'вкл' if wpe else 'выкл'}", callback_data="toggle_warn_pending"),
             ],
             [InlineKeyboardButton(
+                ("🧾 Без реквизитов: считать" if user.get("include_no_method") else "🧾 Без реквизитов: пропускать"),
+                callback_data="toggle_no_method"
+            )],
+            [InlineKeyboardButton(
                 ("👁 Список: все импортированные" if user.get("show_all_bloggers") else "👁 Список: только мой лист"),
                 callback_data="toggle_show_all"
             )],
@@ -558,6 +583,10 @@ def _settings_keyboard(user: dict, lang: str) -> InlineKeyboardMarkup:
             InlineKeyboardButton(f"PENDING: {'include' if ipe else 'skip'}", callback_data="toggle_filter_pending"),
             InlineKeyboardButton(f"Warn: {'on' if wpe else 'off'}", callback_data="toggle_warn_pending"),
         ],
+        [InlineKeyboardButton(
+            ("🧾 Without details: include" if user.get("include_no_method") else "🧾 Without details: skip"),
+            callback_data="toggle_no_method"
+        )],
         [InlineKeyboardButton(
             ("👁 List: all imported" if user.get("show_all_bloggers") else "👁 List: my sheet only"),
             callback_data="toggle_show_all"
@@ -1451,7 +1480,7 @@ async def _universal_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for k in list(context.user_data.keys()):
         if k.startswith(("ib_", "rf_", "bm_", "qm_", "pd_", "awaiting_",
                          "mgr_", "known", "unknown", "skipped", "user",
-                         "payout_raw", "no_method_queue", "all_payout_texts",
+                         "payout_", "no_method_queue", "all_payout_texts",
                          "chm_", "_last", "_rf", "team_")):
             context.user_data.pop(k, None)
     return ConversationHandler.END
@@ -1601,6 +1630,7 @@ def register_start_handlers(app):
     app.add_handler(CallbackQueryHandler(cb_show_more,        pattern=r"^show_more$"))
     app.add_handler(CallbackQueryHandler(cb_sync_my_sheet,   pattern=r"^sync_my_sheet$"))
     app.add_handler(CallbackQueryHandler(cb_toggle_show_all,           pattern=r"^toggle_show_all$"))
+    app.add_handler(CallbackQueryHandler(cb_toggle_include_no_method,  pattern=r"^toggle_no_method$"))
     app.add_handler(CallbackQueryHandler(cb_delete_all_my_bloggers,      pattern=r"^delete_all_my_bloggers$"))
     app.add_handler(CallbackQueryHandler(cb_confirm_delete_all_bloggers, pattern=r"^confirm_delete_all_bloggers$"))
     app.add_handler(CallbackQueryHandler(cb_sync_sheet_run,   pattern=r"^sync_sheet:"))

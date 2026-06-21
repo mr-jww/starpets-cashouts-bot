@@ -38,7 +38,11 @@ def _item(row, lang: str) -> str:
 
 
 def _footer(method_type: str, address: str, lang: str) -> str:
-    return f"{_method_label(method_type, lang)} – {address}"
+    if method_type:
+        label = _method_label(method_type, lang)
+    else:
+        label = "Метод не указан" if lang == "ru" else "Method not set"
+    return f"{label} – {address}"
 
 
 
