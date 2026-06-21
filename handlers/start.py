@@ -921,6 +921,7 @@ async def handle_mgr_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 message_id=msg_id,
                 text=_settings_text(user, lang),
                 reply_markup=_settings_keyboard(user, lang),
+                parse_mode="Markdown",
             )
             return
         except Exception:
