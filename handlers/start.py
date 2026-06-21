@@ -139,7 +139,7 @@ def _start_text(name: str, lang: str) -> str:
 def _main_keyboard(lang: str, role: str = "manager") -> InlineKeyboardMarkup:
     if lang == "ru":
         buttons = [
-            [InlineKeyboardButton("➕ Блогер",   callback_data="bm:add_blogger_start:home")],
+            [InlineKeyboardButton("👥 Блогеры",   callback_data="bm:list:0:")],
             [InlineKeyboardButton("💸 Заказать выплату", callback_data="start_payout")],
             [InlineKeyboardButton("📋 Инструкция", callback_data="show_help"),
              InlineKeyboardButton("⚙️ Настройки",  callback_data="show_settings")],
@@ -149,7 +149,7 @@ def _main_keyboard(lang: str, role: str = "manager") -> InlineKeyboardMarkup:
             buttons.append([InlineKeyboardButton("🔧 Админ", callback_data="show_admin_hint")])
     else:
         buttons = [
-            [InlineKeyboardButton("➕ Blogger",  callback_data="bm:add_blogger_start:home")],
+            [InlineKeyboardButton("👥 Bloggers",  callback_data="bm:list:0:")],
             [InlineKeyboardButton("💸 Create payout",  callback_data="start_payout")],
             [InlineKeyboardButton("📋 Instructions", callback_data="show_help"),
              InlineKeyboardButton("⚙️ Settings",     callback_data="show_settings")],
