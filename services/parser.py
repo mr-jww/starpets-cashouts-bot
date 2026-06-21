@@ -203,15 +203,17 @@ def _detect_mode(parts: list[str]) -> str:
 
 
 def _build_errors(date, views_display, price, platform, game, pay_method, err, lang):
+    # Note: a missing method is intentionally NOT an error here. The payout
+    # method is resolved at emit time (from the base, or from the row when that
+    # source is selected), and a genuinely missing method is surfaced via the
+    # "without details" report — so flagging it per row would double-report and
+    # wrongly mark rows that simply rely on the blogger's default method.
     ef, ed = [], []
     for fname, val in [("date", date), ("views", views_display),
                        ("price", price), ("platform", platform), ("game", game)]:
         if val == err:
             ef.append(fname)
             ed.append(_ERR_DESCRIPTIONS[fname][lang])
-    if not pay_method:
-        ef.append("method")
-        ed.append(_ERR_DESCRIPTIONS["method"][lang])
     return ef, ed
 
 

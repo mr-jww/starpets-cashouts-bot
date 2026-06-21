@@ -498,6 +498,15 @@ async def set_include_no_method(telegram_id: int, value: bool) -> None:
         await db.commit()
 
 
+async def set_method_from_table(telegram_id: int, value: bool) -> None:
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE users SET method_from_table = ? WHERE telegram_id = ?",
+            (1 if value else 0, telegram_id),
+        )
+        await db.commit()
+
+
 async def get_show_all_bloggers(telegram_id: int) -> bool:
     async with get_db() as db:
         async with db.execute(
