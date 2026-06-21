@@ -27,7 +27,7 @@ from telegram.ext import (
 
 from database.queries import (
     get_user, get_blogger_by_name,
-    get_active_methods, get_primary_method,
+    get_active_methods, get_active_methods_by_type, get_primary_method,
     save_payout, db_log, METHOD_LABELS,
 )
 from services.parser import parse_rows, looks_like_lost_tabs, BloggerResult
@@ -389,92 +389,137 @@ async def _send_summary(target: Message, bloggers: list[BloggerResult], lang: st
 # --------------------------------------------------------------------------- #
 # Emit payout blocks (no interactive prompts)
 # --------------------------------------------------------------------------- #
-async def _emit_payouts(target, context):
-    """Produce a payout block for every parsed blogger, without any prompts.
+def _split_rows_by_method(br: BloggerResult, fallback_type: str) -> list[tuple[str, BloggerResult]]:
+    """Group a blogger's rows by the method given in the spreadsheet, in order.
 
-    A blogger that has a payment method in the bot gets a normal block. A
-    blogger without a method — or one not in the bot at all — is handled by the
-    include_no_method setting: when on, a block is produced using the method
+    Rows with no method fall back to fallback_type (the blogger's base default).
+    Returns [(method_type, sub_result), ...]; a single group means one block.
+    """
+    groups: dict[str, list] = {}
+    for row in br.rows:
+        groups.setdefault(row.pay_method or fallback_type, []).append(row)
+    out = []
+    for mtype, rows in groups.items():
+        sub = BloggerResult(blogger=br.blogger, mode=br.mode)
+        sub.rows = rows
+        out.append((mtype, sub))
+    return out
+
+
+async def _resolve_jobs(bloggers, user, method_from_table):
+    """Turn parsed bloggers into payout jobs.
+
+    Base source: one job per blogger using the blogger's primary method.
+    Table source: one job per method given in the rows, so different methods
+    become separate payouts; the address is the blogger's method of that type.
+    Each job: (result, method_type, address, method_id, has_reqs, db_blogger).
+    """
+    jobs = []
+    for br in bloggers:
+        db_b = await get_blogger_by_name(br.blogger, user["id"])
+        primary = await get_primary_method(db_b["id"]) if db_b else None
+
+        if not method_from_table:
+            if primary:
+                jobs.append((br, primary["type"], primary["address"], primary["id"], True, db_b))
+            else:
+                jobs.append((br, br.pay_method_type, "", None, False, db_b))
+            continue
+
+        primary_type = primary["type"] if primary else ""
+        for mtype, sub in _split_rows_by_method(br, primary_type):
+            m = None
+            if db_b and mtype:
+                methods_t = await get_active_methods_by_type(db_b["id"], mtype)
+                m = methods_t[0] if methods_t else None
+            if m:
+                jobs.append((sub, m["type"], m["address"], m["id"], True, db_b))
+            else:
+                jobs.append((sub, mtype, "", None, False, db_b))
+    return jobs
+
+
+async def _emit_payouts(target, context):
+    """Produce a payout block for every job, without any interactive prompts.
+
+    A job with a usable method gets a normal block. A job without one — no
+    method in the base, or the method named in the rows is not on file — is
+    handled by include_no_method: when on, a block is produced with the method
     type from the spreadsheet and an empty address; when off, it is skipped.
-    Either way such bloggers are always listed in the final report.
+    Such cases are always listed in the final report.
     """
     user = context.user_data["user"]
     lang = get_lang(user)
     output_mode = _get_output_mode(user)
     default_fmt = user.get("default_fmt") or "oneline"
     include_no_method = bool(user.get("include_no_method", 0))
+    method_from_table = bool(user.get("method_from_table", 0))
     bloggers: list[BloggerResult] = context.user_data.get("payout_bloggers", [])
 
     eff = getattr(target, "effective_message", None) or getattr(target, "message", None) or target
 
-    # Send the error summary first, so error blocks can reply to it.
+    jobs = await _resolve_jobs(bloggers, user, method_from_table)
+
+    # Send the error summary first (one entry per blogger), so error blocks can
+    # reply to it.
     bloggers_with_errors = [b for b in bloggers if b.has_errors]
     error_summary_msg: Message | None = None
     if bloggers_with_errors:
         error_summary_msg = await _send_error_summary(eff, bloggers_with_errors, lang)
 
     all_texts: list[str] = []
-    no_reqs: list[str] = []      # bloggers without payment details (for the report)
+    no_reqs: list[str] = []      # jobs without payment details (for the report)
     error_count = 0
     warn_count = 0
 
-    for br in bloggers:
-        db_b = await get_blogger_by_name(br.blogger, user["id"])
-        method = await get_primary_method(db_b["id"]) if db_b else None
-
-        if method:
-            method_type = method["type"]
-            address     = method["address"]
-            method_id   = method["id"]
-            has_reqs    = True
-        else:
-            no_reqs.append(br.blogger)
+    for idx, (res, method_type, address, method_id, has_reqs, db_b) in enumerate(jobs):
+        if not has_reqs:
+            label = res.blogger
+            if method_type:
+                label += f" ({METHOD_LABELS.get(method_type, method_type)})"
+            no_reqs.append(label)
             if not include_no_method:
                 continue
-            method_type = br.pay_method_type   # taken from the spreadsheet
-            address     = ""
-            method_id   = None
-            has_reqs    = False
 
-        key = _storage_key(br.blogger)
+        key = _storage_key(f"{res.blogger}_{idx}")
         context.user_data[key] = {
-            "result": br, "method_type": method_type, "address": address,
+            "result": res, "method_type": method_type, "address": address,
             "method_id": method_id, "db_blogger": db_b, "fmt": default_fmt,
             "output_mode": output_mode, "has_reqs": has_reqs,
         }
-        reply_to = error_summary_msg if br.has_errors else None
+        reply_to = error_summary_msg if res.has_errors else None
         await _send_payout_block(
-            eff, br, method_type, address, method_id, key,
+            eff, res, method_type, address, method_id, key,
             default_fmt, lang, output_mode, reply_to=reply_to,
             show_change_method=has_reqs,
         )
 
         all_texts.append(
             (format_oneline if default_fmt == "oneline" else format_multiline)(
-                br, method_type, address, lang
+                res, method_type, address, lang
             )
         )
-        if br.has_errors:
+        if res.has_errors:
             error_count += 1
-        if payout_warning(method_type, br.total_price_display, lang):
+        if payout_warning(method_type, res.total_price_display, lang):
             warn_count += 1
 
         # Save to history only for bloggers that exist in the base.
         if db_b:
             await save_payout(
                 blogger_id=db_b["id"], manager_id=user["id"],
-                amount_raw=br.total_price_display, method_id=method_id,
-                videos_count=br.video_count, game=", ".join(br.games),
-                mode=br.mode, raw_input=context.user_data.get("payout_raw", ""),
-                formatted_text=format_oneline(br, method_type, address, lang),
+                amount_raw=res.total_price_display, method_id=method_id,
+                videos_count=res.video_count, game=", ".join(res.games),
+                mode=res.mode, raw_input=context.user_data.get("payout_raw", ""),
+                formatted_text=format_oneline(res, method_type, address, lang),
             )
             log_info("PAYOUT_CREATED", user_id=user["telegram_id"], username=user["username"],
-                     blogger=br.blogger, amount=br.total_price_display,
-                     method=method_type or "none", videos=br.video_count,
-                     has_errors=br.has_errors, no_method=not has_reqs,
+                     blogger=res.blogger, amount=res.total_price_display,
+                     method=method_type or "none", videos=res.video_count,
+                     has_errors=res.has_errors, no_method=not has_reqs,
                      manager_filter=user.get("manager_filter") or "")
             await db_log(user["id"], "PAYOUT_CREATED",
-                         f"blogger={br.blogger} | amount={br.total_price_display}"
+                         f"blogger={res.blogger} | amount={res.total_price_display}"
                          + ("" if has_reqs else " | no_method"))
 
     context.user_data["all_payout_texts"] = all_texts
