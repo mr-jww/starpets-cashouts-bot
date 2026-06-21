@@ -264,6 +264,36 @@ def _split_row(line: str) -> list[str]:
     return [p.strip() for p in normalized.split("\t")]
 
 
+_STATUS_WORDS = ("unpaid", "paid", "pending")
+_AMOUNT_SIGN_RE = re.compile(r"[$€₽]\s?\d")
+
+
+def looks_like_lost_tabs(text: str) -> bool:
+    """
+    Detect rows where the column separators were lost during copy-paste.
+
+    Telegram Web and the mobile apps replace clipboard tabs with single
+    spaces, which collapses a whole spreadsheet row into one column (see
+    _split_row). The row still carries the signature of real payout data:
+    a link, a money amount and a payout-status word. When all three appear
+    in a line that _split_row could not break into columns, tabs were lost.
+    """
+    for line in text.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        # If the splitter already finds columns, separators are intact — skip.
+        if len(_split_row(line)) >= 3:
+            continue
+        low = s.lower()
+        has_link   = "http" in low
+        has_amount = bool(_AMOUNT_SIGN_RE.search(s))
+        has_status = any(w in low for w in _STATUS_WORDS)
+        if has_link and has_amount and has_status:
+            return True
+    return False
+
+
 def parse_rows(text: str, lang: str = "ru") -> ParseResult:
     result = ParseResult()
     text = text.replace("\r", "")
