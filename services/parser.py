@@ -347,6 +347,18 @@ def parse_rows(text: str, lang: str = "ru") -> ParseResult:
                 f"Line {line_no}: blogger name is missing"
             )
             continue
+        # Misalignment guard: the link must sit in its expected column
+        # (index 3 for splite, 4 for ammm2). If the row has a link elsewhere,
+        # the columns shifted — most often an extra space inside an early cell.
+        # Flag it instead of producing a silently wrong row.
+        expected_link = 3 if mode == "splite" else 4
+        if any("http" in p.lower() for p in parts) and "http" not in parts[expected_link].lower():
+            result.critical_errors.append(
+                f"Строка {line_no}: столбцы съехали — проверьте лишние пробелы внутри ячеек"
+                if lang == "ru" else
+                f"Line {line_no}: columns are misaligned — check for extra spaces inside cells"
+            )
+            continue
         row = _parse_splite_row(parts, lang) if mode == "splite" else _parse_ammm2_row(parts, lang)
         if blogger_name not in blogger_map:
             blogger_map[blogger_name] = BloggerResult(blogger=blogger_name, mode=mode)
