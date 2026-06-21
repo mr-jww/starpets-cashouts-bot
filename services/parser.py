@@ -269,14 +269,18 @@ def _parse_ammm2_row(parts: list[str], lang: str) -> VideoRow:
 def _split_row(line: str) -> list[str]:
     """
     Split a spreadsheet row preserving empty cells.
-    Tab-separated: split by tab (empty cells = empty strings naturally).
-    Space-separated: 4+ spaces = separator + empty cell, 2-3 spaces = separator.
+
+    Tab-separated: split by tab (empty cells are empty strings naturally).
+
+    Space-separated: Telegram converts each spreadsheet tab to a run of spaces
+    (2 per tab on desktop). A run of N >= 2 spaces therefore encodes N // 2
+    column separators, so several consecutive empty cells are preserved instead
+    of collapsing into one. A single space is kept as cell content (e.g.
+    "Adopt Me"); numbers use a non-breaking space and are unaffected.
     """
     if "\t" in line:
         return [p.strip() for p in line.split("\t")]
-    # Normalize space runs: 4+ spaces -> double tab (empty cell), 2-3 -> single tab
-    normalized = re.sub(r" {4,}", "\t\t", line)
-    normalized = re.sub(r" {2,3}", "\t", normalized)
+    normalized = re.sub(r" {2,}", lambda m: "\t" * (len(m.group(0)) // 2), line)
     return [p.strip() for p in normalized.split("\t")]
 
 
