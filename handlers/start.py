@@ -1528,8 +1528,14 @@ async def fallback_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await cmd_settings(update, context)
         return
 
-    # Silently ignore table data
-    if "\t" in text or ("http" in text and ("  " in text or "\u00a0" in text)):
+    # Silently ignore spreadsheet rows pasted outside an active payout,
+    # including Web/mobile pastes where tabs collapsed into single spaces.
+    # Without this, such a paste also triggers the "command not recognized"
+    # reply right after the payout handler has already answered it.
+    from services.parser import looks_like_lost_tabs
+    if ("\t" in text
+            or looks_like_lost_tabs(text)
+            or ("http" in text and ("  " in text or "\u00a0" in text))):
         return
 
     if lang == "ru":
@@ -1537,7 +1543,7 @@ async def fallback_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("💸 Выплата", callback_data="start_payout"),
              InlineKeyboardButton("🏠 Главная", callback_data="show_start")],
         ])
-        await update.message.reply_text("Не распознал команду. Воспользуйся кнопками ниже.", reply_markup=kb)
+        await update.message.reply_text("Не распознал команду. Воспользуйтесь кнопками ниже.", reply_markup=kb)
     else:
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("💸 Payout", callback_data="start_payout"),
