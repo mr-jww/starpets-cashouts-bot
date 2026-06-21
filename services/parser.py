@@ -183,6 +183,22 @@ class ParseResult:
 
 
 def _detect_mode(parts: list[str]) -> str:
+    """Detect table format by the position of the video link.
+
+    The SaB (splite) table keeps the link in column 4 (index 3). The AM/MM2
+    (ammm2) table has an extra New/Old column up front, which moves the link to
+    column 5 (index 4). Detecting by the link position is robust to an empty
+    New/Old cell and to trailing empty columns being trimmed on copy — unlike a
+    plain column count, which can silently misread one table as the other.
+    """
+    for i, p in enumerate(parts[:7]):
+        if "http" in p.lower():
+            if i == 4:
+                return "ammm2"
+            if i == 3:
+                return "splite"
+            break
+    # No link found in the expected place — fall back to the column count.
     return "ammm2" if len(parts) >= 15 else "splite"
 
 
