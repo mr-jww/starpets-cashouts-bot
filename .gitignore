@@ -16,6 +16,9 @@ sheets_backups/
 logs/
 docs/
 
+# Scratch space for temporary/test files (not part of the project)
+temp/
+
 # OS
 .DS_Store
 Thumbs.db
