@@ -464,7 +464,7 @@ async def cb_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = "\n".join(lines)
             if len(text) > 3800:
                 text = text[:3800] + "\n..."
-        await query.edit_message_text(text, reply_markup=_back_kb(lang), parse_mode="Markdown")
+        await query.edit_message_text(text, reply_markup=_back_kb(lang))
 
 
 # --------------------------------------------------------------------------- #

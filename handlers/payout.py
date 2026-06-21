@@ -867,6 +867,7 @@ async def cb_nav_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.message.reply_text(
         _start_text(tg.first_name, lang),
         reply_markup=_main_keyboard(lang, role),
+        parse_mode="Markdown",
     )
 
 
