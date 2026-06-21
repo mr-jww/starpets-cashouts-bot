@@ -31,7 +31,7 @@ from database.queries import (
     save_payout, db_log, METHOD_LABELS, METHOD_TYPES,
     add_payment_method, set_primary_method,
 )
-from services.parser import parse_rows, BloggerResult
+from services.parser import parse_rows, looks_like_lost_tabs, BloggerResult
 from services.formatter import format_oneline, format_multiline, both_formats, payout_warning
 from services.logger import log_info
 from handlers.common import get_user_or_reject, get_lang
@@ -217,7 +217,36 @@ async def payout_got_rows(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     result = parse_rows(raw_text, lang)
 
+    # Telegram Web and the mobile apps turn clipboard tabs into single spaces,
+    # which collapses each row into one column. Detect that specific case and
+    # give actionable advice instead of the cryptic "not enough columns" error.
+    if not result.bloggers and looks_like_lost_tabs(raw_text):
+        log_info("PAYOUT_PARSE_LOST_TABS", user_id=user["telegram_id"],
+                 username=user["username"], manager_filter=user.get("manager_filter") or "")
+        await db_log(user["id"], "PAYOUT_PARSE_LOST_TABS", "column separators lost (tabs to spaces)")
+        if lang == "ru":
+            await update.message.reply_text(
+                "Похоже, при копировании потерялись разделители между столбцами – "
+                "так делает Telegram в браузере и на телефоне.\n\n"
+                "Откройте бота в приложении Telegram Desktop на компьютере и вставьте строки "
+                "заново через Ctrl+Shift+V. В браузерной и мобильной версии вставка из таблицы "
+                "пока работает неправильно."
+            )
+        else:
+            await update.message.reply_text(
+                "It looks like the column separators were lost while copying – "
+                "this is what Telegram does in the browser and on phones.\n\n"
+                "Open the bot in the Telegram Desktop app on a computer and paste the rows "
+                "again with Ctrl+Shift+V. Pasting from the spreadsheet does not work correctly "
+                "in the web and mobile versions yet."
+            )
+        return ConversationHandler.END
+
     if result.critical_errors and not result.bloggers:
+        log_info("PAYOUT_PARSE_FAILED", user_id=user["telegram_id"],
+                 username=user["username"], reason="critical_errors",
+                 lines=len(result.critical_errors))
+        await db_log(user["id"], "PAYOUT_PARSE_FAILED", f"critical_errors={len(result.critical_errors)}")
         await update.message.reply_text(
             ("Не удалось разобрать вставленный текст:\n" if lang == "ru" else "Could not parse the pasted text:\n")
             + "\n".join(result.critical_errors)
@@ -225,8 +254,11 @@ async def payout_got_rows(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     if not result.bloggers:
+        log_info("PAYOUT_PARSE_FAILED", user_id=user["telegram_id"],
+                 username=user["username"], reason="no_rows")
+        await db_log(user["id"], "PAYOUT_PARSE_FAILED", "no data rows")
         await update.message.reply_text(
-            "Не нашёл строк с данными. Убедись, что скопировал из таблицы через Ctrl+Shift+V." if lang == "ru" else "No data rows found. Make sure you copied from the spreadsheet using Ctrl+Shift+V."
+            "Не нашёл строк с данными. Убедитесь, что скопировали из таблицы через Ctrl+Shift+V." if lang == "ru" else "No data rows found. Make sure you copied from the spreadsheet using Ctrl+Shift+V."
         )
         return ConversationHandler.END
 
