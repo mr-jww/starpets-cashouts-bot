@@ -464,8 +464,32 @@ async def _wait_unknown_text(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # --------------------------------------------------------------------------- #
 # Quick add method inside payout
 # --------------------------------------------------------------------------- #
+async def _advance_no_method_queue(target, context, lang: str):
+    """Prompt the next blogger without a payment method, or finish the payout."""
+    queue = context.user_data.get("no_method_queue", [])
+    known = context.user_data.get("known", [])
+    while queue:
+        next_name, next_id = queue.pop(0)
+        context.user_data["no_method_queue"] = queue
+        next_result = next((br for br, db in known if db["id"] == next_id), None)
+        if not next_result:
+            continue
+        context.user_data["qm_blogger"] = next_name
+        text = (f"Нет метода оплаты для {next_name}. Добавить сейчас?"
+                if lang == "ru" else f"No payment method for {next_name}. Add now?")
+        buttons = [
+            [InlineKeyboardButton(METHOD_LABELS[t], callback_data=f"qmt:{t}:{next_name}")
+             for t in METHOD_TYPES],
+            [InlineKeyboardButton("Пропустить" if lang == "ru" else "Skip",
+                                  callback_data=f"qmt:skip:{next_name}")],
+        ]
+        await target.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+        return WAIT_QUICK_ADDRESS
+    return await _finish_payout(target, context, lang)
+
+
 async def cb_quick_method_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """User selected method type for quick add during payout."""
+    """User selected a method type, or chose to skip, during payout."""
     query = update.callback_query
     await query.answer()
     user = await get_user(update.effective_user.id)
@@ -475,15 +499,26 @@ async def cb_quick_method_type(update: Update, context: ContextTypes.DEFAULT_TYP
     method_type = parts[1]
     blogger_name = parts[2]
 
+    # Skip: record the blogger and move on to the next one (or finish).
+    if method_type == "skip":
+        context.user_data.setdefault("skipped", []).append(blogger_name)
+        try:
+            await query.edit_message_text(
+                f"Пропущено: {blogger_name}." if lang == "ru" else f"Skipped: {blogger_name}."
+            )
+        except Exception:
+            pass
+        return await _advance_no_method_queue(query.message, context, lang)
+
     context.user_data["qm_type"] = method_type
     context.user_data["qm_blogger"] = blogger_name
 
     hints = {
-        "site":       {"ru": f"Укажи Profile ID для {blogger_name}:",
+        "site":       {"ru": f"Укажите Profile ID для {blogger_name}:",
                        "en": f"Enter Profile ID for {blogger_name}:"},
-        "usdt-trc20": {"ru": f"Укажи адрес кошелька USDT-TRC20 для {blogger_name}:",
+        "usdt-trc20": {"ru": f"Укажите адрес кошелька USDT-TRC20 для {blogger_name}:",
                        "en": f"Enter USDT-TRC20 wallet address for {blogger_name}:"},
-        "paypal":     {"ru": f"Укажи адрес PayPal для {blogger_name}:",
+        "paypal":     {"ru": f"Укажите адрес PayPal для {blogger_name}:",
                        "en": f"Enter PayPal address for {blogger_name}:"},
     }
     await query.edit_message_text(hints.get(method_type, {}).get(lang, "Enter address:"))
@@ -545,32 +580,8 @@ async def quick_address_input(update: Update, context: ContextTypes.DEFAULT_TYPE
                          manager_filter=user.get("manager_filter") or "")
                 break
 
-    # Show next in no_method queue or finish
-    queue = context.user_data.get("no_method_queue", [])
-    if queue:
-        next_name, next_id = queue.pop(0)
-        context.user_data["no_method_queue"] = queue
-        context.user_data["qm_blogger"] = next_name
-        known2: list = context.user_data.get("known", [])
-        next_result = next((br for br, db in known2 if db["id"] == next_id), None)
-        if next_result:
-            if lang == "ru":
-                text = f"Нет метода оплаты для {next_name}. Добавить сейчас?"
-            else:
-                text = f"No payment method for {next_name}. Add now?"
-            buttons = [
-                [InlineKeyboardButton(METHOD_LABELS[t], callback_data=f"qmt:{t}:{next_name}")
-                 for t in METHOD_TYPES],
-                [InlineKeyboardButton(
-                    "Пропустить" if lang == "ru" else "Skip",
-                    callback_data=f"qmt:skip:{next_name}"
-                )]
-            ]
-            await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
-            return WAIT_QUICK_ADDRESS
-
-    eff = update.message
-    return await _finish_payout(eff, context, lang)
+    # Show next blogger without a method, or finish.
+    return await _advance_no_method_queue(update.message, context, lang)
 
 
 async def _finish_payout(eff, context, lang: str):
@@ -925,6 +936,7 @@ def register_payout_handlers(app):
                 MessageHandler(filters.TEXT & ~filters.COMMAND, _wait_unknown_text),
             ],
             WAIT_QUICK_ADDRESS: [
+                CallbackQueryHandler(cb_quick_method_type, pattern=r"^qmt:"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, quick_address_input),
             ],
         },
@@ -953,7 +965,8 @@ def register_payout_handlers(app):
     app.add_handler(CallbackQueryHandler(cb_payout_toggle,   pattern=r"^pt_tog:"))
     app.add_handler(CallbackQueryHandler(cb_change_method,   pattern=r"^pt_chm:"))
     app.add_handler(CallbackQueryHandler(cb_select_method,   pattern=r"^pt_sel:"))
-    app.add_handler(CallbackQueryHandler(cb_quick_method_type, pattern=r"^qmt:"))
+    # qmt: is handled inside the WAIT_QUICK_ADDRESS state so its return value
+    # controls the conversation (e.g. Skip can finish the payout cleanly).
     app.add_handler(CallbackQueryHandler(cb_payout_cancel,        pattern=r"^payout_cancel$"))
     app.add_handler(CallbackQueryHandler(cb_nav_home,             pattern=r"^nav_home$"))
     app.add_handler(CallbackQueryHandler(cb_nav_payout,           pattern=r"^nav_payout$"))
