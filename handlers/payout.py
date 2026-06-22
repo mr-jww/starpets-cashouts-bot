@@ -45,11 +45,26 @@ CANCEL_TEXT = {"ru": "Отменено.", "en": "Cancelled."}
 # Helpers
 # --------------------------------------------------------------------------- #
 def _parse_flags(args: list[str]) -> str | None:
-    for arg in [a.lower() for a in args]:
-        if arg.startswith("amb-"):
+    for arg in (args or []):
+        if arg.lower().startswith("amb-"):
             val = arg[4:]
-            return "" if val == "all" else val
+            return "" if val.lower() == "all" else val
     return None
+
+
+def _manager_matches(flt: str, cell: str) -> bool:
+    """True if the manager filter matches the row's manager cell.
+
+    Matches a whole name, not a substring: "Tom" does not match "Tommy". The
+    cell may also carry extra text ("John (lead)") and still match.
+    """
+    flt = (flt or "").strip().lower()
+    if not flt:
+        return True
+    cell = (cell or "").strip().lower()
+    if cell == flt:
+        return True
+    return flt in re.split(r"[^\w]+", cell)
 
 
 def _get_output_mode(user: dict) -> str:
@@ -268,7 +283,7 @@ async def payout_got_rows(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if effective_filter:
         filtered = [
             b for b in result.bloggers
-            if any(effective_filter.lower() in (r.manager or "").lower() for r in b.rows)
+            if any(_manager_matches(effective_filter, r.manager) for r in b.rows)
         ]
         if not filtered:
             await update.message.reply_text(
