@@ -8,7 +8,7 @@ from telegram.ext import ContextTypes, CommandHandler, CallbackQueryHandler
 
 from database.queries import (
     get_user, get_bloggers_for_manager, get_blogger_by_name,
-    get_payouts_for_blogger,
+    get_blogger_by_id, get_payouts_for_blogger,
 )
 from handlers.common import get_user_or_reject, get_lang, nav_keyboard
 
@@ -45,7 +45,7 @@ async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     buttons = [
-        [InlineKeyboardButton(b["name"], callback_data=f"hist_b:{b['id']}:{b['name']}")]
+        [InlineKeyboardButton(b["name"], callback_data=f"hist_b:{b['id']}")]
         for b in bloggers
     ]
     text = "Выберите блогера из списка:" if lang == "ru" else "Select a blogger from the list:"
@@ -58,26 +58,29 @@ async def cb_history_blogger(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user = await get_user(update.effective_user.id)
     lang = get_lang(user) if user else "en"
 
-    _, blogger_id, blogger_name = query.data.split(":", 2)
-    db_b = {"id": int(blogger_id), "name": blogger_name}
+    blogger_id = int(query.data.split(":", 1)[1])
+    db_b = await get_blogger_by_id(blogger_id)
+    if not db_b:
+        await query.edit_message_text("Блогер не найден." if lang == "ru" else "Blogger not found.")
+        return
     await _ask_limit(query.message, db_b, lang, edit=True)
 
 
 async def _ask_limit(target, db_b: dict, lang: str, edit: bool = False):
     if lang == "ru":
         buttons = [[
-            InlineKeyboardButton("5",    callback_data=f"hist_n:{db_b['id']}:{db_b['name']}:5"),
-            InlineKeyboardButton("10",   callback_data=f"hist_n:{db_b['id']}:{db_b['name']}:10"),
-            InlineKeyboardButton("20",   callback_data=f"hist_n:{db_b['id']}:{db_b['name']}:20"),
-            InlineKeyboardButton("Все",  callback_data=f"hist_n:{db_b['id']}:{db_b['name']}:0"),
+            InlineKeyboardButton("5",    callback_data=f"hist_n:{db_b['id']}:5"),
+            InlineKeyboardButton("10",   callback_data=f"hist_n:{db_b['id']}:10"),
+            InlineKeyboardButton("20",   callback_data=f"hist_n:{db_b['id']}:20"),
+            InlineKeyboardButton("Все",  callback_data=f"hist_n:{db_b['id']}:0"),
         ]]
         text = f"Сколько последних выплат показать для {db_b['name']}?"
     else:
         buttons = [[
-            InlineKeyboardButton("5",    callback_data=f"hist_n:{db_b['id']}:{db_b['name']}:5"),
-            InlineKeyboardButton("10",   callback_data=f"hist_n:{db_b['id']}:{db_b['name']}:10"),
-            InlineKeyboardButton("20",   callback_data=f"hist_n:{db_b['id']}:{db_b['name']}:20"),
-            InlineKeyboardButton("All",  callback_data=f"hist_n:{db_b['id']}:{db_b['name']}:0"),
+            InlineKeyboardButton("5",    callback_data=f"hist_n:{db_b['id']}:5"),
+            InlineKeyboardButton("10",   callback_data=f"hist_n:{db_b['id']}:10"),
+            InlineKeyboardButton("20",   callback_data=f"hist_n:{db_b['id']}:20"),
+            InlineKeyboardButton("All",  callback_data=f"hist_n:{db_b['id']}:0"),
         ]]
         text = f"How many recent payouts to show for {db_b['name']}?"
 
@@ -93,10 +96,11 @@ async def cb_history_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await get_user(update.effective_user.id)
     lang = get_lang(user) if user else "en"
 
-    parts = query.data.split(":", 3)
-    blogger_id   = int(parts[1])
-    blogger_name = parts[2]
-    limit        = int(parts[3])
+    parts = query.data.split(":")
+    blogger_id = int(parts[1])
+    limit      = int(parts[2])
+    db_b = await get_blogger_by_id(blogger_id)
+    blogger_name = db_b["name"] if db_b else "?"
 
     payouts = await get_payouts_for_blogger(blogger_id, limit)
 

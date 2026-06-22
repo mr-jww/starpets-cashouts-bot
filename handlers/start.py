@@ -1118,29 +1118,6 @@ async def cb_go_import(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(text, reply_markup=_back_keyboard(lang))
 
 
-
-async def cb_start_payout(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Start payout directly from inline button on home screen."""
-    query = update.callback_query
-    await query.answer()
-    user = await get_user(update.effective_user.id)
-    lang = get_lang(user) if user else "en"
-    context.user_data["user"] = user
-    context.user_data["effective_filter"] = user.get("manager_filter") or None if user else None
-    from handlers.payout import WAIT_ROWS
-    if lang == "ru":
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✕ Отмена", callback_data="payout_cancel"),
-        ]])
-        await query.message.reply_text("Вставьте строки из таблицы.", reply_markup=keyboard)
-    else:
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✕ Cancel", callback_data="payout_cancel"),
-        ]])
-        await query.message.reply_text("Paste rows from the spreadsheet.", reply_markup=keyboard)
-
-
-
 async def cb_toggle_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
