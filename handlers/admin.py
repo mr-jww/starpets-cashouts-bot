@@ -84,6 +84,8 @@ def _admin_main_kb(lang: str) -> InlineKeyboardMarkup:
             [InlineKeyboardButton("♻️ Восстановить БД", callback_data="adm:restore_prompt")],
             [InlineKeyboardButton("📊 Экспорт в xlsx",    callback_data="adm:export")],
             [InlineKeyboardButton("🔄 Sync Google Sheets",   callback_data="adm:sync_sheets")],
+            [InlineKeyboardButton("📥 Скачать таблицу SPBBB", callback_data="adm:dl_sheet_prompt")],
+            [InlineKeyboardButton("← Назад", callback_data="show_start")],
         ])
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("👥 Users",               callback_data="adm:users")],
@@ -98,6 +100,7 @@ def _admin_main_kb(lang: str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("📊 Export to xlsx",       callback_data="adm:export")],
         [InlineKeyboardButton("🔄 Sync Google Sheets",   callback_data="adm:sync_sheets")],
         [InlineKeyboardButton("📥 Download SPBBB table", callback_data="adm:dl_sheet_prompt")],
+        [InlineKeyboardButton("← Back", callback_data="show_start")],
     ])
 
 
