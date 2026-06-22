@@ -774,7 +774,13 @@ async def _apply_mgr_name(update, context, name: str, lang: str):
     tg = update.effective_user
     role = "admin" if tg.id == ADMIN_ID else "manager"
 
-    # After onboarding name selection — show main screen with a prompt
+    # After onboarding name selection — show the main screen and (re)establish
+    # the persistent bottom menu. The bottom menu can only be attached to a new
+    # message, not to an edit, so the old selection message is just stripped of
+    # its inline buttons and the confirmation is sent as a fresh message with
+    # the reply keyboard. Without this, users who went through onboarding (e.g.
+    # after their manager filter was cleared) had no bottom menu until they ran
+    # /start a second time.
     if was_new:
         confirm_text = (
             f"Отлично, {_md_escape(tg.first_name)}! Имя установлено: *{_md_escape(name)}*\n\n"
@@ -787,19 +793,16 @@ async def _apply_mgr_name(update, context, name: str, lang: str):
         )
         if msg_id:
             try:
-                await update.bot.edit_message_text(
+                await update.bot.edit_message_reply_markup(
                     chat_id=update.effective_chat.id,
                     message_id=msg_id,
-                    text=confirm_text,
-                    reply_markup=_main_keyboard(lang, role),
-                    parse_mode="Markdown",
+                    reply_markup=None,
                 )
-                return
             except Exception:
                 pass
         await update.effective_chat.send_message(
             confirm_text,
-            reply_markup=_main_keyboard(lang, role),
+            reply_markup=_persistent_keyboard(lang, role),
             parse_mode="Markdown",
         )
         return
