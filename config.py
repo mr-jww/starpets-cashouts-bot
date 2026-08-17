@@ -29,11 +29,10 @@ MANAGER_BUTTON_ORDER = [
     "Max", "smazakxd", "Swirl",
     "Maison", "Emilio", "Nick",
     "Jennifer", "Marco", "Ketty",
-    "Rina", "Stacy", "Antonio",
-    "Tony", "Tom", "Talon",
-    "Vanessa", "Monty", "Unfairbird",
-    "Vojtěch", "Seb", "Annalice",
-    "Sergo",
+    "Rina", "Tony", "Tom",
+    "Monty", "Unfairbird", "Vojtěch",
+    "Seb", "Annalice", "Sergo",
+    "William", "Anthony",
 ]
 
 # Google Sheets sync
