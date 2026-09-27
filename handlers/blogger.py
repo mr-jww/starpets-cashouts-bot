@@ -42,7 +42,7 @@ from database.queries import (
     db_log, METHOD_TYPES, METHOD_LABELS,
 )
 from services.logger import log_info
-from handlers.common import get_user_or_reject, get_lang
+from handlers.common import get_user_or_reject, get_lang, disable_payout_mode
 
 
 # --------------------------------------------------------------------------- #
@@ -536,10 +536,12 @@ async def _send_prompt(query, context, text: str, action: str, **extra) -> None:
 # /cancel for text input
 # --------------------------------------------------------------------------- #
 async def cmd_cancel_bm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("bm_action"):
-        return  # Not our cancel
     user = await get_user(update.effective_user.id)
     lang = get_lang(user) if user else "en"
+    await disable_payout_mode(update.effective_user.id, context)
+    if not context.user_data.get("bm_action"):
+        await update.message.reply_text("Отменено." if lang == "ru" else "Cancelled.")
+        return
     context.user_data.pop("bm_action", None)
     try:
         await update.message.delete()
@@ -913,7 +915,6 @@ def register_blogger_handlers(app):
     app.add_handler(CommandHandler("bloggers",    cmd_bloggers))
     app.add_handler(CommandHandler("add_blogger", cmd_add_blogger))
     app.add_handler(CommandHandler("add_method",  cmd_add_method))
-    app.add_handler(CommandHandler("cancel",      cmd_cancel_bm))
 
     # Main inline router
     app.add_handler(CallbackQueryHandler(cb_bm, pattern=r"^bm:"))
@@ -923,3 +924,8 @@ def register_blogger_handlers(app):
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
         group=2,
     )
+
+
+def register_blogger_cancel_handler(app):
+    """Register last so active ConversationHandlers get the first /cancel."""
+    app.add_handler(CommandHandler("cancel", cmd_cancel_bm))

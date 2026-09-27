@@ -9,7 +9,7 @@ from __future__ import annotations
 from functools import wraps
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from database.queries import get_user
+from database.queries import get_user, set_payout_mode
 from config import ADMIN_ID
 
 
@@ -57,6 +57,24 @@ def nav_keyboard(lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🏠 Home", callback_data="nav_home")],
     ])
+
+
+def clear_payout_context(context) -> None:
+    """Remove transient payout data without touching other active flows."""
+    exact_keys = {
+        "user", "effective_filter", "payout_bloggers", "payout_raw",
+        "all_payout_texts", "_payout_just_handled",
+    }
+    for key in list(context.user_data):
+        if key in exact_keys or key.startswith(("pd_", "chm_methods_")):
+            context.user_data.pop(key, None)
+    if context.user_data.get("_last_action") == "payout_got_rows":
+        context.user_data.pop("_last_action", None)
+
+
+async def disable_payout_mode(telegram_id: int, context) -> None:
+    await set_payout_mode(telegram_id, False)
+    clear_payout_context(context)
 
 
 

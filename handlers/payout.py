@@ -28,12 +28,12 @@ from telegram.ext import (
 from database.queries import (
     get_user, get_blogger_by_name,
     get_active_methods, get_active_methods_by_type, get_primary_method,
-    save_payout, db_log, METHOD_LABELS,
+    save_payout, db_log, set_payout_mode, METHOD_LABELS,
 )
 from services.parser import parse_rows, looks_like_lost_tabs, BloggerResult
 from services.formatter import format_oneline, format_multiline, payout_warning
 from services.logger import log_info
-from handlers.common import get_user_or_reject, get_lang
+from handlers.common import get_user_or_reject, get_lang, disable_payout_mode
 from handlers.start import _universal_cancel
 import re
 
@@ -140,7 +140,41 @@ def _storage_key(name: str) -> str:
 
 
 
-def _nav_keyboard(lang: str) -> InlineKeyboardMarkup:
+def _payout_entry_keyboard(lang: str) -> InlineKeyboardMarkup:
+    if lang == "ru":
+        enable, cancel = "🔁 Включить режим выплат", "✕ Отмена"
+    else:
+        enable, cancel = "🔁 Enable payout mode", "✕ Cancel"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(enable, callback_data="payout_mode_enable")],
+        [InlineKeyboardButton(cancel, callback_data="payout_cancel")],
+    ])
+
+
+def _payout_mode_keyboard(lang: str) -> InlineKeyboardMarkup:
+    text = "✕ Выйти из режима выплат" if lang == "ru" else "✕ Exit payout mode"
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton(text, callback_data="payout_mode_exit"),
+    ]])
+
+
+def _active_mode_keyboard(user: dict, lang: str) -> InlineKeyboardMarkup | None:
+    return _payout_mode_keyboard(lang) if user.get("payout_mode") else None
+
+
+def _nav_keyboard(lang: str, payout_mode: bool = False) -> InlineKeyboardMarkup:
+    if payout_mode:
+        if lang == "ru":
+            return InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏠 Главная", callback_data="nav_home")],
+                [InlineKeyboardButton("📤 Вывести все выплаты", callback_data="nav_copy_all")],
+                [InlineKeyboardButton("✕ Выйти из режима выплат", callback_data="payout_mode_exit")],
+            ])
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("🏠 Home", callback_data="nav_home")],
+            [InlineKeyboardButton("📤 Export all payouts", callback_data="nav_copy_all")],
+            [InlineKeyboardButton("✕ Exit payout mode", callback_data="payout_mode_exit")],
+        ])
     if lang == "ru":
         return InlineKeyboardMarkup([
             [
@@ -201,16 +235,24 @@ async def cmd_payout(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif flag_filter == "":
         hint = f"\n{'Фильтр отключён' if lang == 'ru' else 'Filter disabled'}"
 
-    if lang == "ru":
+    if user.get("payout_mode"):
+        if lang == "ru":
+            text = (
+                "Режим выплат включён. Вставляйте строки для выплат одним сообщением за другим."
+                + hint
+            )
+        else:
+            text = (
+                "Payout mode is enabled. Paste payout rows one message after another."
+                + hint
+            )
+        keyboard = _payout_mode_keyboard(lang)
+    elif lang == "ru":
         text = "Выдели строки в таблице, скопируй их (*Ctrl+C*) и вставь сюда (*Ctrl+Shift+V*)." + hint
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✕ Отмена", callback_data="payout_cancel"),
-        ]])
+        keyboard = _payout_entry_keyboard(lang)
     else:
         text = "Select the rows in the spreadsheet, copy them (*Ctrl+C*) and paste here (*Ctrl+Shift+V*)." + hint
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✕ Cancel", callback_data="payout_cancel"),
-        ]])
+        keyboard = _payout_entry_keyboard(lang)
     await update.effective_message.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
     return WAIT_ROWS
 
@@ -230,6 +272,7 @@ async def payout_got_rows(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if raw_text in _nav or any(raw_text.startswith(e) for e in ("🏠", "💸", "👥", "⚙️")):
         return ConversationHandler.END
 
+    context.user_data["_payout_just_handled"] = True
     effective_filter = context.user_data.get("effective_filter")
 
     result = parse_rows(raw_text, lang)
@@ -247,7 +290,8 @@ async def payout_got_rows(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "так делает Telegram в браузере и на телефоне.\n\n"
                 "Откройте бота в приложении Telegram Desktop на компьютере и вставьте строки "
                 "заново через Ctrl+Shift+V. В браузерной и мобильной версии вставка из таблицы "
-                "пока работает неправильно."
+                "пока работает неправильно.",
+                reply_markup=_active_mode_keyboard(user, lang),
             )
         else:
             await update.message.reply_text(
@@ -255,7 +299,8 @@ async def payout_got_rows(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "this is what Telegram does in the browser and on phones.\n\n"
                 "Open the bot in the Telegram Desktop app on a computer and paste the rows "
                 "again with Ctrl+Shift+V. Pasting from the spreadsheet does not work correctly "
-                "in the web and mobile versions yet."
+                "in the web and mobile versions yet.",
+                reply_markup=_active_mode_keyboard(user, lang),
             )
         return ConversationHandler.END
 
@@ -266,7 +311,8 @@ async def payout_got_rows(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await db_log(user["id"], "PAYOUT_PARSE_FAILED", f"critical_errors={len(result.critical_errors)}")
         await update.message.reply_text(
             ("Не удалось разобрать вставленный текст:\n" if lang == "ru" else "Could not parse the pasted text:\n")
-            + "\n".join(result.critical_errors)
+            + "\n".join(result.critical_errors),
+            reply_markup=_active_mode_keyboard(user, lang),
         )
         return ConversationHandler.END
 
@@ -275,7 +321,8 @@ async def payout_got_rows(update: Update, context: ContextTypes.DEFAULT_TYPE):
                  username=user["username"], reason="no_rows")
         await db_log(user["id"], "PAYOUT_PARSE_FAILED", "no data rows")
         await update.message.reply_text(
-            "Не нашёл строк с данными. Убедитесь, что скопировали из таблицы через Ctrl+Shift+V." if lang == "ru" else "No data rows found. Make sure you copied from the spreadsheet using Ctrl+Shift+V."
+            "Не нашёл строк с данными. Убедитесь, что скопировали из таблицы через Ctrl+Shift+V." if lang == "ru" else "No data rows found. Make sure you copied from the spreadsheet using Ctrl+Shift+V.",
+            reply_markup=_active_mode_keyboard(user, lang),
         )
         return ConversationHandler.END
 
@@ -289,7 +336,8 @@ async def payout_got_rows(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 f"Среди вставленных строк нет записей менеджера {effective_filter}.\nЧтобы обработать все строки без фильтра: /payout amb-all"
                 if lang == "ru" else
-                f"No rows found for manager {effective_filter} in the pasted data.\nTo process all rows without a filter: /payout amb-all"
+                f"No rows found for manager {effective_filter} in the pasted data.\nTo process all rows without a filter: /payout amb-all",
+                reply_markup=_active_mode_keyboard(user, lang),
             )
             return ConversationHandler.END
         result.bloggers = filtered
@@ -367,7 +415,8 @@ async def payout_got_rows(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "Все строки имеют статус PAID или PENDING и были пропущены. Настройки фильтра: /settings."
             if lang == "ru" else
-            "All rows have PAID or PENDING status and were skipped. Filter settings: /settings."
+            "All rows have PAID or PENDING status and were skipped. Filter settings: /settings.",
+            reply_markup=_active_mode_keyboard(user, lang),
         )
         return ConversationHandler.END
 
@@ -562,7 +611,14 @@ async def _emit_payouts(target, context):
             lines.append(f"⚠️ Bloggers without details ({state}): {', '.join(no_reqs)}")
             lines.append("To fill payment details automatically, add them to the spreadsheet and sync.")
         summary = "\n".join(lines)
-    await eff.reply_text(summary, reply_markup=_nav_keyboard(lang))
+    payout_mode = bool(user.get("payout_mode"))
+    if payout_mode:
+        summary += (
+            "\nМожно сразу вставить следующую таблицу."
+            if lang == "ru" else
+            "\nYou can paste the next spreadsheet right away."
+        )
+    await eff.reply_text(summary, reply_markup=_nav_keyboard(lang, payout_mode))
     return ConversationHandler.END
 
 
@@ -681,12 +737,70 @@ async def cb_payout_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+async def cb_enable_payout_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user = await get_user_or_reject(update)
+    if not user:
+        return ConversationHandler.END
+    lang = get_lang(user)
+    await set_payout_mode(update.effective_user.id, True)
+    user["payout_mode"] = 1
+    context.user_data["user"] = user
+    context.user_data.setdefault("effective_filter", user.get("manager_filter") or None)
+    text = (
+        "Режим выплат включён. Теперь можно последовательно отправлять строки для выплат.\n"
+        "Вставьте текущую таблицу или следующую отдельным сообщением."
+        if lang == "ru" else
+        "Payout mode is enabled. You can now send payout rows one message after another.\n"
+        "Paste the current spreadsheet or the next one as a separate message."
+    )
+    await query.edit_message_text(text, reply_markup=_payout_mode_keyboard(lang))
+    return WAIT_ROWS
+
+
+async def cb_exit_payout_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user = await get_user(update.effective_user.id)
+    lang = get_lang(user) if user else "en"
+    await disable_payout_mode(update.effective_user.id, context)
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await query.message.reply_text(
+        "Режим выплат выключен." if lang == "ru" else "Payout mode is disabled."
+    )
+    return ConversationHandler.END
+
+
+async def handle_payout_mode_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Route plain text through the existing payout parser when DB mode is on."""
+    text = (getattr(update.message, "text", None) or "").lstrip()
+    if not text or text.startswith("/"):
+        return False
+    user = await get_user(update.effective_user.id)
+    if not user or not user.get("payout_mode"):
+        return False
+    context.user_data.update({
+        "user": user,
+        "effective_filter": user.get("manager_filter") or None,
+    })
+    await payout_got_rows(update, context)
+    # This call already happens in fallback group 1, so the cross-group guard
+    # must not suppress the user's next message.
+    context.user_data.pop("_payout_just_handled", None)
+    return True
+
+
 # --------------------------------------------------------------------------- #
 # /cancel
 # --------------------------------------------------------------------------- #
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await get_user(update.effective_user.id)
     lang = get_lang(user) if user else "en"
+    await set_payout_mode(update.effective_user.id, False)
     context.user_data.clear()
     await update.message.reply_text(CANCEL_TEXT[lang])
     return ConversationHandler.END
@@ -739,8 +853,13 @@ async def cb_nav_copy_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # If fits in one message — send as text, else as file
     from handlers.common import nav_keyboard as _nav_kb
+    nav_markup = (
+        _nav_keyboard(lang, payout_mode=True)
+        if user and user.get("payout_mode")
+        else _nav_kb(lang)
+    )
     if len(combined) <= 4000:
-        await query.message.reply_text(combined, reply_markup=_nav_kb(lang))
+        await query.message.reply_text(combined, reply_markup=nav_markup)
     else:
         buf = io.BytesIO(combined.encode("utf-8"))
         buf.name = "payouts.txt"
@@ -752,7 +871,7 @@ async def cb_nav_copy_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await query.message.reply_text(
             "Готово." if lang == "ru" else "Done.",
-            reply_markup=_nav_kb(lang),
+            reply_markup=nav_markup,
         )
 
 
@@ -768,6 +887,8 @@ def register_payout_handlers(app):
         ],
         states={
             WAIT_ROWS: [
+                CallbackQueryHandler(cb_enable_payout_mode, pattern=r"^payout_mode_enable$"),
+                CallbackQueryHandler(cb_exit_payout_mode, pattern=r"^payout_mode_exit$"),
                 CallbackQueryHandler(cb_payout_cancel, pattern=r"^payout_cancel$"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, payout_got_rows),
             ],
@@ -798,6 +919,8 @@ def register_payout_handlers(app):
     app.add_handler(CallbackQueryHandler(cb_change_method,   pattern=r"^pt_chm:"))
     app.add_handler(CallbackQueryHandler(cb_select_method,   pattern=r"^pt_sel:"))
     app.add_handler(CallbackQueryHandler(cb_payout_cancel,        pattern=r"^payout_cancel$"))
+    app.add_handler(CallbackQueryHandler(cb_enable_payout_mode,   pattern=r"^payout_mode_enable$"))
+    app.add_handler(CallbackQueryHandler(cb_exit_payout_mode,     pattern=r"^payout_mode_exit$"))
     app.add_handler(CallbackQueryHandler(cb_nav_home,             pattern=r"^nav_home$"))
     app.add_handler(CallbackQueryHandler(cb_nav_payout,           pattern=r"^nav_payout$"))
     app.add_handler(CallbackQueryHandler(cb_nav_copy_all,         pattern=r"^nav_copy_all$"))

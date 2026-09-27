@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS users (
     warn_pending      INTEGER NOT NULL DEFAULT 1,
     include_no_method INTEGER NOT NULL DEFAULT 0,
     method_from_table INTEGER NOT NULL DEFAULT 0,
+    payout_mode      INTEGER NOT NULL DEFAULT 0,
     mgr_password      TEXT,
     failed_attempts   INTEGER NOT NULL DEFAULT 0,
     locked_until      TEXT,
@@ -104,6 +105,7 @@ async def init_db() -> None:
             ("warn_pending",      "INTEGER NOT NULL DEFAULT 1"),
             ("include_no_method", "INTEGER NOT NULL DEFAULT 0"),
             ("method_from_table", "INTEGER NOT NULL DEFAULT 0"),
+            ("payout_mode",      "INTEGER NOT NULL DEFAULT 0"),
             ("mgr_password",      "TEXT"),
             ("failed_attempts",   "INTEGER NOT NULL DEFAULT 0"),
             ("locked_until",      "TEXT"),
@@ -121,7 +123,7 @@ async def init_db() -> None:
                         await db.execute("UPDATE users SET output_mode = 'text' WHERE output_mode IS NULL")
                     elif col == "default_fmt":
                         await db.execute("UPDATE users SET default_fmt = 'oneline' WHERE default_fmt IS NULL")
-                    elif col in ("include_paid", "include_pending"):
+                    elif col in ("include_paid", "include_pending", "payout_mode"):
                         await db.execute(f"UPDATE users SET {col} = 0 WHERE {col} IS NULL")
                     elif col in ("warn_paid", "warn_pending"):
                         await db.execute(f"UPDATE users SET {col} = 1 WHERE {col} IS NULL")

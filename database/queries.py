@@ -65,6 +65,24 @@ async def set_user_lang(telegram_id: int, lang: str) -> None:
         await db.commit()
 
 
+async def get_payout_mode(telegram_id: int) -> bool:
+    async with get_db() as db:
+        async with db.execute(
+            "SELECT payout_mode FROM users WHERE telegram_id = ?", (telegram_id,)
+        ) as cur:
+            row = await cur.fetchone()
+            return bool(row[0]) if row else False
+
+
+async def set_payout_mode(telegram_id: int, enabled: bool) -> None:
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE users SET payout_mode = ? WHERE telegram_id = ?",
+            (1 if enabled else 0, telegram_id),
+        )
+        await db.commit()
+
+
 async def get_all_users() -> list[dict]:
     async with get_db() as db:
         async with db.execute(

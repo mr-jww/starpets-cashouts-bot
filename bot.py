@@ -12,7 +12,7 @@ import config
 from database.db import init_db
 from services.logger import log_system
 from handlers.start import register_start_handlers, fallback_message
-from handlers.blogger import register_blogger_handlers
+from handlers.blogger import register_blogger_handlers, register_blogger_cancel_handler
 from handlers.payout import register_payout_handlers
 from handlers.admin import register_admin_handlers
 from handlers.export_xlsx import register_export_handlers
@@ -220,6 +220,7 @@ def main():
     register_sheets_handlers(app)
     register_history_handlers(app)
     register_import_handlers(app)
+    register_blogger_cancel_handler(app)
 
     # Group 1 — fallback for plain text outside any active conversation
     app.add_handler(

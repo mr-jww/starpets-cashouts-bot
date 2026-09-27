@@ -31,7 +31,7 @@ from database.queries import (
 )
 from services.logger import log_info
 from handlers.start import _universal_cancel
-from handlers.common import get_user_or_reject, get_lang, nav_keyboard
+from handlers.common import get_user_or_reject, get_lang, nav_keyboard, disable_payout_mode
 
 WAIT_DATA = 0
 WAIT_CONFIRM = 1  # handled globally, not inside ConversationHandler
@@ -703,6 +703,7 @@ async def cb_ib_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await get_user(update.effective_user.id)
     lang = get_lang(user) if user else "en"
+    await disable_payout_mode(update.effective_user.id, context)
     context.user_data.pop("ib_changes", None)
     context.user_data.pop("ib_invalid", None)
     context.user_data.pop("ib_user", None)

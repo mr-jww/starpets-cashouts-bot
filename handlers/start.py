@@ -16,7 +16,7 @@ from database.queries import (
     set_output_mode, set_default_fmt, set_filter_setting, db_log,
     set_manager_password, check_manager_password, reset_lockout, get_locked_users)
 from services.logger import log_info
-from handlers.common import get_user_or_reject, get_lang
+from handlers.common import get_user_or_reject, get_lang, disable_payout_mode
 from config import ADMIN_ID, TEAM_PASSWORD, MANAGER_BUTTON_ORDER
 
 # States for /reformat conversation
@@ -1470,6 +1470,7 @@ async def cb_rf_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_cancel_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await get_user(update.effective_user.id)
     lang = get_lang(user) if user else "en"
+    await disable_payout_mode(update.effective_user.id, context)
     context.user_data.clear()
     await update.message.reply_text(
         "Отменено." if lang == "ru" else "Cancelled."
@@ -1504,6 +1505,10 @@ async def fallback_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.pop("_rf_just_done", False):
         return
 
+    # The payout ConversationHandler already handled this update in group 0.
+    if context.user_data.pop("_payout_just_handled", False):
+        return
+
     # Password input for manager selection
     if context.user_data.get("awaiting_mgr_pw"):
         text = (update.message.text or "").strip()
@@ -1519,6 +1524,10 @@ async def fallback_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Don't interfere with active blogger menu text input
     if context.user_data.get("bm_action"):
         # Nav button pressed during text input — let handle_text_input in group 2 handle it
+        return
+    # Admin text is handled later in group 3.
+    if (context.user_data.get("awaiting_admin_search")
+            or context.user_data.get("awaiting_restore")):
         return
     if context.user_data.get("awaiting_mgr"):
         text = (update.message.text or "").strip()
@@ -1565,6 +1574,12 @@ async def fallback_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if text in settings_labels:
         await cmd_settings(update, context)
+        return
+
+    # Persistent payout mode is read from SQLite on every message, so it also
+    # works after a bot restart or ConversationHandler timeout.
+    from handlers.payout import handle_payout_mode_message
+    if await handle_payout_mode_message(update, context):
         return
 
     # Silently ignore spreadsheet rows pasted outside an active payout,
