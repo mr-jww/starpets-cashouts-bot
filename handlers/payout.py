@@ -612,12 +612,6 @@ async def _emit_payouts(target, context):
             lines.append("To fill payment details automatically, add them to the spreadsheet and sync.")
         summary = "\n".join(lines)
     payout_mode = bool(user.get("payout_mode"))
-    if payout_mode:
-        summary += (
-            "\nМожно сразу вставить следующую таблицу."
-            if lang == "ru" else
-            "\nYou can paste the next spreadsheet right away."
-        )
     await eff.reply_text(summary, reply_markup=_nav_keyboard(lang, payout_mode))
     return ConversationHandler.END
 
@@ -770,7 +764,8 @@ async def cb_exit_payout_mode(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception:
         pass
     await query.message.reply_text(
-        "Режим выплат выключен." if lang == "ru" else "Payout mode is disabled."
+        "Режим выплат выключен." if lang == "ru" else "Payout mode is disabled.",
+        reply_markup=_nav_keyboard(lang, payout_mode=False),
     )
     return ConversationHandler.END
 

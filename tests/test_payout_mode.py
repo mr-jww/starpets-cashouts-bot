@@ -149,24 +149,51 @@ class PayoutModeHandlerTests(unittest.IsolatedAsyncioTestCase):
         markup = update.callback_query.edit_message_text.await_args.kwargs["reply_markup"]
         self.assertEqual(markup.inline_keyboard[0][0].text, "✕ Выйти из режима выплат")
 
-    async def test_exit_mode_disables_and_only_clears_payout_data(self):
-        update = _callback_update()
-        context = _context(
-            payout_raw="raw", pd_test={}, all_payout_texts=["one"],
-            bm_action="edit_note",
-        )
-        user = {"telegram_id": 123, "lang": "en", "payout_mode": 1}
+    async def test_exit_mode_disables_and_shows_standard_payout_navigation(self):
+        expected = {
+            "ru": ["🏠 Главная", "💸 Новая выплата", "📤 Вывести все выплаты"],
+            "en": ["🏠 Home", "💸 New payout", "📤 Export all payouts"],
+        }
+        for lang, expected_labels in expected.items():
+            with self.subTest(lang=lang):
+                update = _callback_update()
+                context = _context(
+                    payout_raw="raw", pd_test={}, all_payout_texts=["one"],
+                    bm_action="edit_note",
+                )
+                user = {"telegram_id": 123, "lang": lang, "payout_mode": 1}
 
-        with patch.object(payout, "get_user", AsyncMock(return_value=user)), \
-                patch("handlers.common.set_payout_mode", AsyncMock()) as set_mode:
-            state = await payout.cb_exit_payout_mode(update, context)
+                with patch.object(payout, "get_user", AsyncMock(return_value=user)), \
+                        patch("handlers.common.set_payout_mode", AsyncMock()) as set_mode:
+                    state = await payout.cb_exit_payout_mode(update, context)
 
-        self.assertEqual(state, payout.ConversationHandler.END)
-        set_mode.assert_awaited_once_with(123, False)
-        self.assertNotIn("payout_raw", context.user_data)
-        self.assertNotIn("pd_test", context.user_data)
-        self.assertNotIn("all_payout_texts", context.user_data)
-        self.assertEqual(context.user_data["bm_action"], "edit_note")
+                self.assertEqual(state, payout.ConversationHandler.END)
+                set_mode.assert_awaited_once_with(123, False)
+                self.assertNotIn("payout_raw", context.user_data)
+                self.assertNotIn("pd_test", context.user_data)
+                self.assertNotIn("all_payout_texts", context.user_data)
+                self.assertEqual(context.user_data["bm_action"], "edit_note")
+                call = update.callback_query.message.reply_text.await_args
+                markup = call.kwargs["reply_markup"]
+                labels = [button.text for row in markup.inline_keyboard for button in row]
+                self.assertEqual(labels, expected_labels)
+
+    async def test_active_mode_summary_has_no_next_spreadsheet_hint(self):
+        for lang, removed_text in (
+            ("ru", "Можно сразу вставить следующую таблицу."),
+            ("en", "You can paste the next spreadsheet right away."),
+        ):
+            with self.subTest(lang=lang):
+                update = _message_update()
+                context = _context(
+                    user={"id": 1, "telegram_id": 123, "lang": lang, "payout_mode": 1},
+                    payout_bloggers=[],
+                )
+
+                await payout._emit_payouts(update, context)
+
+                summary = update.message.reply_text.await_args.args[0]
+                self.assertNotIn(removed_text, summary)
 
     async def test_cancel_command_disables_mode(self):
         update = _message_update("/cancel")
