@@ -38,7 +38,7 @@ def _callback_update(user_id=123):
         message=message,
     )
     return SimpleNamespace(
-        effective_user=SimpleNamespace(id=user_id),
+        effective_user=SimpleNamespace(id=user_id, first_name="Test"),
         effective_message=message,
         callback_query=query,
         message=None,
@@ -112,6 +112,53 @@ class PayoutModeDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
 
 class PayoutModeHandlerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_main_screen_shows_mode_status_and_exit_in_both_languages(self):
+        expected = {
+            "ru": ("Режим выплат включён.", "✕ Выйти из режима выплат"),
+            "en": ("Payout mode is enabled.", "✕ Exit payout mode"),
+        }
+        for lang, (status, exit_label) in expected.items():
+            with self.subTest(lang=lang):
+                update = _callback_update()
+                context = _context()
+                user = {"telegram_id": 123, "lang": lang, "role": "manager", "payout_mode": 1}
+
+                with patch.object(start, "get_user", AsyncMock(return_value=user)):
+                    await start.cb_show_start(update, context)
+
+                call = update.callback_query.edit_message_text.await_args
+                self.assertIn(status, call.args[0])
+                markup = call.kwargs["reply_markup"]
+                exit_button = markup.inline_keyboard[-1][0]
+                self.assertEqual(exit_button.text, exit_label)
+                self.assertEqual(exit_button.callback_data, "payout_mode_exit")
+
+    async def test_main_screen_without_mode_is_unchanged(self):
+        expected_callbacks = [
+            "bm:list:0:", "start_payout", "show_help", "show_settings", "show_more",
+        ]
+        for lang, absent_status in (
+            ("ru", "Режим выплат включён."),
+            ("en", "Payout mode is enabled."),
+        ):
+            with self.subTest(lang=lang):
+                update = _callback_update()
+                context = _context()
+                user = {"telegram_id": 123, "lang": lang, "role": "manager", "payout_mode": 0}
+
+                with patch.object(start, "get_user", AsyncMock(return_value=user)):
+                    await start.cb_show_start(update, context)
+
+                call = update.callback_query.edit_message_text.await_args
+                self.assertNotIn(absent_status, call.args[0])
+                markup = call.kwargs["reply_markup"]
+                callbacks = [
+                    button.callback_data
+                    for row in markup.inline_keyboard
+                    for button in row
+                ]
+                self.assertEqual(callbacks, expected_callbacks)
+
     async def test_wait_rows_nav_button_reaches_fallback(self):
         update = _message_update("🏠 Home")
         user = {
@@ -304,13 +351,27 @@ class PayoutModeHandlerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((rows[0][0].text, rows[1][0].text), labels)
 
     def test_mode_result_keyboard_has_full_width_exit_in_both_languages(self):
-        for lang, label in (("ru", "✕ Выйти из режима выплат"), ("en", "✕ Exit payout mode")):
+        expected = {
+            "ru": ["📤 Вывести все выплаты", "✕ Выйти из режима выплат"],
+            "en": ["📤 Export all payouts", "✕ Exit payout mode"],
+        }
+        for lang, expected_labels in expected.items():
             with self.subTest(lang=lang):
                 rows = payout._nav_keyboard(lang, payout_mode=True).inline_keyboard
-                self.assertEqual(len(rows[-1]), 1)
-                self.assertEqual(rows[-1][0].text, label)
-                self.assertNotIn("New payout", " ".join(button.text for row in rows for button in row))
-                self.assertNotIn("Новая выплата", " ".join(button.text for row in rows for button in row))
+                labels = [button.text for row in rows for button in row]
+                self.assertEqual(labels, expected_labels)
+                self.assertTrue(all(len(row) == 1 for row in rows))
+
+    def test_normal_payout_navigation_is_unchanged(self):
+        expected = {
+            "ru": ["🏠 Главная", "💸 Новая выплата", "📤 Вывести все выплаты"],
+            "en": ["🏠 Home", "💸 New payout", "📤 Export all payouts"],
+        }
+        for lang, expected_labels in expected.items():
+            with self.subTest(lang=lang):
+                rows = payout._nav_keyboard(lang, payout_mode=False).inline_keyboard
+                labels = [button.text for row in rows for button in row]
+                self.assertEqual(labels, expected_labels)
 
     async def test_export_keeps_mode_exit_button_in_both_languages(self):
         expected = {

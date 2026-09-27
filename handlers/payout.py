@@ -166,12 +166,10 @@ def _nav_keyboard(lang: str, payout_mode: bool = False) -> InlineKeyboardMarkup:
     if payout_mode:
         if lang == "ru":
             return InlineKeyboardMarkup([
-                [InlineKeyboardButton("🏠 Главная", callback_data="nav_home")],
                 [InlineKeyboardButton("📤 Вывести все выплаты", callback_data="nav_copy_all")],
                 [InlineKeyboardButton("✕ Выйти из режима выплат", callback_data="payout_mode_exit")],
             ])
         return InlineKeyboardMarkup([
-            [InlineKeyboardButton("🏠 Home", callback_data="nav_home")],
             [InlineKeyboardButton("📤 Export all payouts", callback_data="nav_copy_all")],
             [InlineKeyboardButton("✕ Exit payout mode", callback_data="payout_mode_exit")],
         ])
@@ -812,10 +810,11 @@ async def cb_nav_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await get_user(tg.id)
     lang = get_lang(user) if user else "en"
     role = user.get("role", "manager") if user else "manager"
+    payout_mode = bool(user and user.get("payout_mode"))
     from handlers.start import _start_text, _main_keyboard
     await query.message.reply_text(
-        _start_text(tg.first_name, lang),
-        reply_markup=_main_keyboard(lang, role),
+        _start_text(tg.first_name, lang, payout_mode),
+        reply_markup=_main_keyboard(lang, role, payout_mode),
         parse_mode="Markdown",
     )
 

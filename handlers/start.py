@@ -56,9 +56,13 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown",
         )
     else:
+        payout_mode = bool(user.get("payout_mode"))
         await update.message.reply_text(
-            _start_text(tg.first_name, lang),
-            reply_markup=_persistent_keyboard(lang, role),
+            _start_text(tg.first_name, lang, payout_mode),
+            reply_markup=(
+                _main_keyboard(lang, role, payout_mode=True)
+                if payout_mode else _persistent_keyboard(lang, role)
+            ),
             parse_mode="Markdown",
         )
 
@@ -110,9 +114,9 @@ def _onboarding_keyboard(lang: str) -> InlineKeyboardMarkup:
     ])
 
 
-def _start_text(name: str, lang: str) -> str:
+def _start_text(name: str, lang: str, payout_mode: bool = False) -> str:
     if lang == "ru":
-        return (
+        text = (
             f"Привет, {_md_escape(name)}!\n\n"
             "Этот бот помогает оформлять выплаты амбассадорам StarPets.\n\n"
             "Принцип простой: Вы вставляете строки из таблицы, "
@@ -124,7 +128,8 @@ def _start_text(name: str, lang: str) -> str:
             "3. Укажите каждому метод оплаты.\n"
             "4. Нажмите _Заказать выплату_ и вставьте строки из таблицы."
         )
-    return (
+        return text + ("\n\nРежим выплат включён." if payout_mode else "")
+    text = (
         f"Hi, {_md_escape(name)}!\n\n"
         "This bot handles payouts for StarPets ambassadors.\n\n"
         "The idea is simple: you paste rows from the spreadsheet, "
@@ -136,9 +141,12 @@ def _start_text(name: str, lang: str) -> str:
         "3. Set a payment method for each blogger.\n"
         "4. Tap _Create payout_ and paste rows from the spreadsheet."
     )
+    return text + ("\n\nPayout mode is enabled." if payout_mode else "")
 
 
-def _main_keyboard(lang: str, role: str = "manager") -> InlineKeyboardMarkup:
+def _main_keyboard(
+    lang: str, role: str = "manager", payout_mode: bool = False,
+) -> InlineKeyboardMarkup:
     if lang == "ru":
         buttons = [
             [InlineKeyboardButton("👥 Блогеры",   callback_data="bm:list:0:")],
@@ -149,6 +157,10 @@ def _main_keyboard(lang: str, role: str = "manager") -> InlineKeyboardMarkup:
         ]
         if role == "admin":
             buttons.append([InlineKeyboardButton("🔧 Админ", callback_data="show_admin_hint")])
+        if payout_mode:
+            buttons.append([InlineKeyboardButton(
+                "✕ Выйти из режима выплат", callback_data="payout_mode_exit",
+            )])
     else:
         buttons = [
             [InlineKeyboardButton("👥 Bloggers",  callback_data="bm:list:0:")],
@@ -159,6 +171,10 @@ def _main_keyboard(lang: str, role: str = "manager") -> InlineKeyboardMarkup:
         ]
         if role == "admin":
             buttons.append([InlineKeyboardButton("🔧 Admin", callback_data="show_admin_hint")])
+        if payout_mode:
+            buttons.append([InlineKeyboardButton(
+                "✕ Exit payout mode", callback_data="payout_mode_exit",
+            )])
     return InlineKeyboardMarkup(buttons)
 
 
@@ -1044,9 +1060,10 @@ async def cb_show_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await get_user(tg.id)
     lang = get_lang(user) if user else "en"
     role = user["role"] if user else "manager"
+    payout_mode = bool(user and user.get("payout_mode"))
     await query.edit_message_text(
-        _start_text(tg.first_name, lang),
-        reply_markup=_main_keyboard(lang, role),
+        _start_text(tg.first_name, lang, payout_mode),
+        reply_markup=_main_keyboard(lang, role, payout_mode),
         parse_mode="Markdown",
     )
 
@@ -1561,9 +1578,10 @@ async def fallback_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     tg = update.effective_user
     if text in home_labels:
+        payout_mode = bool(user and user.get("payout_mode"))
         await update.message.reply_text(
-            _start_text(tg.first_name, lang),
-            reply_markup=_main_keyboard(lang, role),
+            _start_text(tg.first_name, lang, payout_mode),
+            reply_markup=_main_keyboard(lang, role, payout_mode),
             parse_mode="Markdown",
         )
         return
