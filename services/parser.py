@@ -1,9 +1,13 @@
 """
 Parser for rows copy-pasted from Google Sheets tracker.
 
-Auto-detects table type by column count:
-  splite  - 13 cols (14 with Comment, ignored)
-  ammm2   - 15 cols (16 with Comments, ignored)
+Auto-detects table type:
+  splite  - 13 cols (14 with Comment, ignored); link in column 4 (index 3)
+  ammm2   - 15 cols (16 with Comments, ignored); link in column 5 (index 4)
+  ww      - Advertising Bloggers report 2026 WW, 16 cols when copied A:P
+            (26 for A:Z); link also in column 5 (index 4), so it is told
+            apart from ammm2 by its leading columns: A is the release date,
+            B the week date, C the month number.
 """
 
 from __future__ import annotations
@@ -78,7 +82,7 @@ def _is_junk_line(parts: list[str]) -> bool:
     joined = "\t".join(parts).strip()
     if re.match(r"new\s+week", joined, re.IGNORECASE):
         return True
-    if parts[0].strip().lower() == "blogger":
+    if parts[0].strip().lower() in ("blogger", "release date"):
         return True
     return False
 
@@ -182,22 +186,61 @@ class ParseResult:
         return [b for b in self.bloggers if b.has_errors]
 
 
-def _detect_mode(parts: list[str]) -> str:
-    """Detect table format by the position of the video link.
+_WW_DATE_RE = re.compile(r"^\d{1,2}[./-]\d{1,2}[./-]\d{2,4}$")
+_WW_MONTH_RE = re.compile(r"^(\d{1,2})(?:\.0)?$")
 
-    The SaB (splite) table keeps the link in column 4 (index 3). The AM/MM2
-    (ammm2) table has an extra New/Old column up front, which moves the link to
-    column 5 (index 4). Detecting by the link position is robust to an empty
-    New/Old cell and to trailing empty columns being trimmed on copy — unlike a
-    plain column count, which can silently misread one table as the other.
+
+def _ww_signature(parts: list[str]) -> bool:
+    """WW table signature: A release date, B week date (or empty), C month 1-12.
+
+    The WW link sits in column 5 (index 4), exactly like ammm2, so the link
+    position alone cannot tell the two apart. The leading date/week/month
+    columns can: no splite or ammm2 row starts with two dates and a month
+    number (blogger name, New/Old, language live there instead).
     """
+    if len(parts) < 3:
+        return False
+    if not _WW_DATE_RE.match(parts[0]):
+        return False
+    if parts[1] and not _WW_DATE_RE.match(parts[1]):
+        return False
+    m = _WW_MONTH_RE.match(parts[2])
+    return bool(m) and 1 <= int(m.group(1)) <= 12
+
+
+def _strong_mode(parts: list[str]) -> Optional[str]:
+    """Confident format signal, or None when the row is inconclusive.
+
+    A row is conclusive when it matches the WW signature or carries a link in
+    exactly the link column of a known format. Used to detect rows pasted from
+    a different table than the one the current message was locked to.
+    """
+    if _ww_signature(parts):
+        return "ww"
     for i, p in enumerate(parts[:7]):
         if "http" in p.lower():
             if i == 4:
                 return "ammm2"
             if i == 3:
                 return "splite"
-            break
+            return None
+    return None
+
+
+def _detect_mode(parts: list[str]) -> str:
+    """Detect table format by the WW signature or the position of the video link.
+
+    The SaB (splite) table keeps the link in column 4 (index 3). The AM/MM2
+    (ammm2) table has an extra New/Old column up front, which moves the link to
+    column 5 (index 4) — the same column as in the WW table, so WW is checked
+    first by its leading date/week/month columns. Detecting by the link
+    position is robust to an empty New/Old cell and to trailing empty columns
+    being trimmed on copy — unlike a plain column count, which can silently
+    misread one table as the other.
+    """
+    strong = _strong_mode(parts)
+    if strong:
+        return strong
     # No link found in the expected place — fall back to the column count.
     return "ammm2" if len(parts) >= 15 else "splite"
 
@@ -267,6 +310,39 @@ def _parse_ammm2_row(parts: list[str], lang: str) -> VideoRow:
     )
 
 
+def _parse_ww_row(parts: list[str], lang: str) -> VideoRow:
+    """WW table: A date, D blogger, E link, F ambassador, G game, I platform,
+    M views, N payment method, O price, P payment status."""
+    err = ERR[lang]
+    blogger  = parts[3].strip()
+    link     = parts[4].strip()
+    date     = parts[0].strip() or err
+    platform = _normalise_platform(parts[8].strip(), link, lang)
+    views_s  = parts[12].strip()
+    price_r  = parts[14].strip()
+    price    = price_r or err
+    currency = _detect_currency(price_r) if price_r else "$"
+    method     = _normalise_method(parts[13].strip())
+    pay_status = parts[15].strip().upper() if len(parts) > 15 else ""
+    game       = parts[6].strip() or err
+    views      = _parse_views(views_s) if views_s else None
+    vdisp      = _format_views(views) if views is not None else err
+    manager    = parts[5].strip()
+    ef, ed     = _build_errors(date, vdisp, price, platform, game, method, err, lang)
+    return VideoRow(
+        blogger=blogger, platform=platform, link=link, date=date,
+        views_raw=vdisp, views=views, price=price, currency=currency,
+        pay_method=method, pay_status=pay_status, game=game, mode="ww", manager=manager,
+        has_error=bool(ef), error_fields=ef, error_details=ed,
+    )
+
+
+# Per-format column layout: minimum columns, link index, blogger name index.
+_MIN_COLS    = {"splite": 13, "ammm2": 15, "ww": 15}
+_LINK_IDX    = {"splite": 3,  "ammm2": 4,  "ww": 4}
+_BLOGGER_IDX = {"splite": 0,  "ammm2": 0,  "ww": 3}
+_ROW_PARSERS = {"splite": _parse_splite_row, "ammm2": _parse_ammm2_row, "ww": _parse_ww_row}
+
 
 def _split_row(line: str) -> list[str]:
     """
@@ -333,7 +409,19 @@ def parse_rows(text: str, lang: str = "ru") -> ParseResult:
             detected_mode = _detect_mode(parts)
             result.mode = detected_mode
         mode = detected_mode
-        min_cols = 13 if mode == "splite" else 15
+        # Format-mixing guard: a row with a confident signal of a DIFFERENT
+        # format (e.g. a WW date/week/month row inside an AM/MM2 paste) must
+        # not be parsed under the locked format — that would silently produce
+        # wrong payouts. Flag it instead.
+        strong = _strong_mode(parts)
+        if strong is not None and strong != mode:
+            result.critical_errors.append(
+                f"Строка {line_no}: похожа на формат «{strong}», а не «{mode}» — строка пропущена"
+                if lang == "ru" else
+                f"Line {line_no}: looks like the '{strong}' format, not '{mode}' — row skipped"
+            )
+            continue
+        min_cols = _MIN_COLS[mode]
         if len(parts) < min_cols:
             result.critical_errors.append(
                 f"Строка {line_no}: недостаточно столбцов ({len(parts)} из {min_cols})"
@@ -341,7 +429,7 @@ def parse_rows(text: str, lang: str = "ru") -> ParseResult:
                 f"Line {line_no}: not enough columns ({len(parts)} of {min_cols})"
             )
             continue
-        blogger_name = parts[0].strip()
+        blogger_name = parts[_BLOGGER_IDX[mode]].strip()
         if not blogger_name:
             result.critical_errors.append(
                 f"Строка {line_no}: отсутствует имя блогера"
@@ -350,10 +438,10 @@ def parse_rows(text: str, lang: str = "ru") -> ParseResult:
             )
             continue
         # Misalignment guard: the link must sit in its expected column
-        # (index 3 for splite, 4 for ammm2). If the row has a link elsewhere,
+        # (index 3 for splite, 4 for ammm2/ww). If the row has a link elsewhere,
         # the columns shifted — most often an extra space inside an early cell.
         # Flag it instead of producing a silently wrong row.
-        expected_link = 3 if mode == "splite" else 4
+        expected_link = _LINK_IDX[mode]
         if any("http" in p.lower() for p in parts) and "http" not in parts[expected_link].lower():
             result.critical_errors.append(
                 f"Строка {line_no}: столбцы съехали — проверьте лишние пробелы внутри ячеек"
@@ -361,7 +449,7 @@ def parse_rows(text: str, lang: str = "ru") -> ParseResult:
                 f"Line {line_no}: columns are misaligned — check for extra spaces inside cells"
             )
             continue
-        row = _parse_splite_row(parts, lang) if mode == "splite" else _parse_ammm2_row(parts, lang)
+        row = _ROW_PARSERS[mode](parts, lang)
         if blogger_name not in blogger_map:
             blogger_map[blogger_name] = BloggerResult(blogger=blogger_name, mode=mode)
         blogger_map[blogger_name].rows.append(row)
