@@ -216,6 +216,59 @@ check("ammm2 row flagged",        len(w6.critical_errors) == 1)
 check("ammm2 row not parsed",     len(w6.bloggers) == 1
                                   and w6.bloggers[0].blogger == "notsp1der")
 
+# --- WW: некорректная дата в A (реальные случаи из таблицы) -----------------
+_WW_TAIL = "\tMaison\tAdopt Me\t\tTikTok\tEnglish\tOld\tpublished\t136\tSite\t$0.27\tUNPAID"
+WW_NO_YEAR      = "11.11\t09.11.2026\t11\tfluffy\thttps://vm.tiktok.com/ZN85cP97r/" + _WW_TAIL
+WW_BAD_MONTH    = "11.14.2026\t#VALUE!\t#VALUE!\tfluffy\thttps://vm.tiktok.com/ZN85cP97s/" + _WW_TAIL
+WW_BAD_YEAR     = "12.11.2206\t10.11.2206\t11\tfluffy\thttps://vm.tiktok.com/ZN85cP97t/" + _WW_TAIL
+WW_OUT_OF_WEEK  = "20.11.2026\t09.11.2026\t11\tfluffy\thttps://vm.tiktok.com/ZN85cP97u/" + _WW_TAIL
+WW_GOOD         = "11.11.2026\t09.11.2026\t11\tfluffy\thttps://vm.tiktok.com/ZN85cP97v/" + _WW_TAIL
+
+for label, line, needle in [
+    ("без года '11.11'",         WW_NO_YEAR,     "некорректная дата «11.11»"),
+    ("месяц 14, B/C=#VALUE!",    WW_BAD_MONTH,   "некорректная дата «11.14.2026»"),
+    ("год 2206",                 WW_BAD_YEAR,    "некорректная дата «12.11.2206»"),
+    ("дата вне недели B",        WW_OUT_OF_WEEK, "вне недели"),
+]:
+    print(f"\n--- WW: {label} ---")
+    # Bad row first: it must not lock the paste to ammm2, nor be silently dropped
+    r = parse_rows(line + "\n" + WW_GOOD, "ru")
+    check("mode=ww",                  r.mode == "ww")
+    check("no critical errors",       not r.critical_errors)
+    check("both rows parsed",         len(r.bloggers) == 1 and r.bloggers[0].video_count == 2)
+    bad = r.bloggers[0].rows[0]
+    check("bad row has date error",   bad.has_error and bad.error_fields[0] == "date")
+    check("error text explicit",      needle in bad.error_details[0])
+    check("date not guessed",         bad.date == line.split("\t")[0])
+    check("good row clean",           not r.bloggers[0].rows[1].has_error)
+    check("total marked ERROR",       r.bloggers[0].total_price_display.startswith("⚠️ERROR:"))
+    check("error summary lists it",   needle in r.bloggers[0].error_summary("ru"))
+    # Bad row after a good one: same, not flagged as "another format"
+    r2 = parse_rows(WW_GOOD + "\n" + line, "ru")
+    check("after good row: parsed",   not r2.critical_errors and r2.bloggers[0].video_count == 2
+                                      and r2.bloggers[0].rows[1].has_error)
+
+print("\n--- WW: некорректная дата, EN ---")
+re_en = parse_rows(WW_NO_YEAR, "en")
+check("mode=ww",                  re_en.mode == "ww")
+check("EN error text",            "invalid date '11.11'" in re_en.bloggers[0].rows[0].error_details[0])
+
+print("\n--- WW: двухзначный год не угадывается ---")
+r2y = parse_rows("07.09.26\t07.09.2026\t9\tnotsp1der\thttps://youtu.be/x" + _WW_TAIL, "ru")
+check("mode=ww",                  r2y.mode == "ww")
+check("2-digit year → error",     r2y.bloggers[0].rows[0].has_error)
+
+print("\n--- WW: корректные строки не получают ошибок даты ---")
+check("WW_ONE no errors",         not parse_rows(WW_ONE, "ru").bloggers[0].has_errors)
+check("WW_MULTI no errors",       not any(b.has_errors for b in parse_rows(WW_MULTI, "ru").bloggers))
+
+print("\n--- Регрессия: splite и ammm2 не распознаются как WW ---")
+for name, text, mode in [("SPLITE_MULTI", SPLITE_MULTI, "splite"), ("AMMM2", WW_MIXED_AMMM2.splitlines()[0], "ammm2"),
+                         ("AMMM2_EMPTY_PRICE", AMMM2_EMPTY_PRICE, "ammm2"), ("BLOCKED", BLOCKED, "splite")]:
+    rr = parse_rows(text, "ru")
+    check(f"{name} mode={mode}",      rr.mode == mode)
+    check(f"{name} no critical",      not rr.critical_errors)
+
 # --------------------------------------------------------------------------- #
 print(f"\n{'='*40}")
 print(f"PASSED: {PASS}  FAILED: {FAIL}")

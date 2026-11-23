@@ -13,6 +13,7 @@ Auto-detects table type:
 from __future__ import annotations
 import re
 from dataclasses import dataclass, field
+from datetime import date as _date, timedelta as _timedelta
 from typing import Optional
 
 ERR = {"ru": "ERR:ПУСТО", "en": "ERR:EMPTY"}
@@ -204,18 +205,91 @@ def _ww_signature(parts: list[str]) -> bool:
         return False
     if parts[1] and not _WW_DATE_RE.match(parts[1]):
         return False
-    m = _WW_MONTH_RE.match(parts[2])
+    return _is_month(parts[2])
+
+
+_NEW_OLD = ("new", "old")
+_PAY_STATUSES = ("PAID", "UNPAID", "PENDING")
+
+
+def _is_month(cell: str) -> bool:
+    m = _WW_MONTH_RE.match(cell.strip())
     return bool(m) and 1 <= int(m.group(1)) <= 12
+
+
+def _cell(parts: list[str], i: int) -> str:
+    return parts[i].strip() if len(parts) > i else ""
+
+
+def _ww_structure(parts: list[str]) -> bool:
+    """WW detection that does not depend on a well-formed release date in A.
+
+    In the real sheet B (week) and C (month) are formulas of A, so a typo in A
+    ("11.11", "11.14.2026") can leave B/C intact, or turn them into "#VALUE!".
+    The row is still WW if any WW-only column layout is present:
+      - the classic A/B/C date/week/month signature;
+      - B is a full date and C a month number (A ignored);
+      - K (index 10) is New/Old — splite and ammm2 keep the payment status
+        there, and ammm2 keeps New/Old in B (index 1) instead;
+      - link in E (index 4) with a payment status in P (index 15) while K is
+        not a payment status (ammm2 has its status in K).
+    The release date itself is validated separately, as a row error.
+    """
+    if _ww_signature(parts):
+        return True
+    b, c, k = _cell(parts, 1), _cell(parts, 2), _cell(parts, 10)
+    if _WW_DATE_RE.match(b) and _is_month(c):
+        return True
+    if b.lower() in _NEW_OLD:
+        return False  # ammm2: New/Old in B
+    if k.lower() in _NEW_OLD:
+        return True
+    if ("http" in _cell(parts, 4).lower()
+            and _cell(parts, 15).upper() in _PAY_STATUSES
+            and k.upper() not in _PAY_STATUSES):
+        return True
+    return False
+
+
+_FULL_DATE_RE = re.compile(r"^(\d{1,2})[./-](\d{1,2})[./-](\d{4})$")
+_MIN_YEAR = 2020
+
+
+def _parse_full_date(raw: str) -> Optional[_date]:
+    """Strict dd.mm.yyyy parse; None for partial, impossible or 2-digit-year dates."""
+    m = _FULL_DATE_RE.match(raw.strip())
+    if not m:
+        return None
+    try:
+        return _date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+    except ValueError:
+        return None
+
+
+def _ww_date_problem(a: str, b: str, lang: str) -> str:
+    """Return a description of what is wrong with the WW release date, or ''.
+
+    No year is ever guessed: a date must be complete and real, have a plausible
+    year, and — when the week cell B is a valid date — fall inside that week.
+    """
+    d = _parse_full_date(a)
+    if d is None or not (_MIN_YEAR <= d.year <= _date.today().year + 1):
+        return (f"некорректная дата «{a}»" if lang == "ru" else f"invalid date '{a}'")
+    week = _parse_full_date(b)
+    if week is not None and not (week <= d <= week + _timedelta(days=6)):
+        return (f"дата «{a}» вне недели «{b}»" if lang == "ru"
+                else f"date '{a}' is outside week '{b}'")
+    return ""
 
 
 def _strong_mode(parts: list[str]) -> Optional[str]:
     """Confident format signal, or None when the row is inconclusive.
 
-    A row is conclusive when it matches the WW signature or carries a link in
+    A row is conclusive when it matches the WW structure or carries a link in
     exactly the link column of a known format. Used to detect rows pasted from
     a different table than the one the current message was locked to.
     """
-    if _ww_signature(parts):
+    if _ww_structure(parts):
         return "ww"
     for i, p in enumerate(parts[:7]):
         if "http" in p.lower():
@@ -233,7 +307,7 @@ def _detect_mode(parts: list[str]) -> str:
     The SaB (splite) table keeps the link in column 4 (index 3). The AM/MM2
     (ammm2) table has an extra New/Old column up front, which moves the link to
     column 5 (index 4) — the same column as in the WW table, so WW is checked
-    first by its leading date/week/month columns. Detecting by the link
+    first by its column structure (see _ww_structure). Detecting by the link
     position is robust to an empty New/Old cell and to trailing empty columns
     being trimmed on copy — unlike a plain column count, which can silently
     misread one table as the other.
@@ -329,6 +403,14 @@ def _parse_ww_row(parts: list[str], lang: str) -> VideoRow:
     vdisp      = _format_views(views) if views is not None else err
     manager    = parts[5].strip()
     ef, ed     = _build_errors(date, vdisp, price, platform, game, method, err, lang)
+    # A present but malformed release date ("11.11", "11.14.2026", year 2206)
+    # is a row error: the payout block is then marked ERROR and listed in the
+    # error summary instead of being produced as a normal payout.
+    if date != err:
+        problem = _ww_date_problem(date, parts[1], lang)
+        if problem:
+            ef.insert(0, "date")
+            ed.insert(0, problem)
     return VideoRow(
         blogger=blogger, platform=platform, link=link, date=date,
         views_raw=vdisp, views=views, price=price, currency=currency,

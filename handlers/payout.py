@@ -67,6 +67,29 @@ def _manager_matches(flt: str, cell: str) -> bool:
     return flt in re.split(r"[^\w]+", cell)
 
 
+def _filter_rows_by_manager(
+    bloggers: list[BloggerResult], flt: str,
+) -> tuple[list[BloggerResult], int]:
+    """Keep only the rows (integrations) of the selected ambassador.
+
+    A blogger can have rows of several ambassadors in one paste; only the
+    matching rows go into the payout, so video count, games, total and the
+    PAID/PENDING warnings are computed from those rows alone. Bloggers left
+    without matching rows are dropped. Returns (bloggers, excluded_rows), where
+    excluded_rows counts the other-ambassador rows of the bloggers that were
+    kept (mixed bloggers), for an informational notice.
+    """
+    kept: list[BloggerResult] = []
+    excluded = 0
+    for b in bloggers:
+        rows = [r for r in b.rows if _manager_matches(flt, r.manager)]
+        if not rows:
+            continue
+        excluded += len(b.rows) - len(rows)
+        kept.append(BloggerResult(blogger=b.blogger, rows=rows, mode=b.mode))
+    return kept, excluded
+
+
 def _get_output_mode(user: dict) -> str:
     return user.get("output_mode") or "block"
 
@@ -326,10 +349,7 @@ async def payout_got_rows(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Apply manager filter
     if effective_filter:
-        filtered = [
-            b for b in result.bloggers
-            if any(_manager_matches(effective_filter, r.manager) for r in b.rows)
-        ]
+        filtered, excluded_rows = _filter_rows_by_manager(result.bloggers, effective_filter)
         if not filtered:
             await update.message.reply_text(
                 f"Среди вставленных строк нет записей менеджера {effective_filter}.\nЧтобы обработать все строки без фильтра: /payout amb-all"
@@ -339,6 +359,14 @@ async def payout_got_rows(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return ConversationHandler.END
         result.bloggers = filtered
+        if excluded_rows:
+            await update.message.reply_text(
+                f"Исключено строк других амбассадоров (или без амбассадора) у тех же блогеров: "
+                f"{excluded_rows}. В выплату вошли только строки {effective_filter}."
+                if lang == "ru" else
+                f"Excluded rows of other ambassadors (or with no ambassador) for the same bloggers: "
+                f"{excluded_rows}. Only {effective_filter}'s rows are included in the payout."
+            )
 
 
     # Apply payment status filter
